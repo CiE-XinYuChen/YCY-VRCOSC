@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QGroupBox, QLabel, QHBoxLayout, QFormLayout, QPushButton, QCheckBox
 from PySide6.QtGui import QTextCursor, QColor, QTextCharFormat
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, QObject
 import logging
 import time
 import os
@@ -10,11 +10,28 @@ from i18n import translate as _
 
 logger = logging.getLogger(__name__)
 
+
+class LogSignalEmitter(QObject):
+    """用于跨线程发送日志信号的 QObject"""
+    log_signal = Signal(str)
+
+
 class QTextEditHandler(logging.Handler):
-    """Custom log handler to output log messages to QTextEdit."""
+    """Custom log handler to output log messages to QTextEdit.
+
+    使用 Qt 信号槽机制确保 GUI 更新在主线程中执行，
+    避免从其他线程（如 asyncio 任务、BLE 线程）调用时崩溃。
+    """
     def __init__(self, text_edit):
         super().__init__()
         self.text_edit = text_edit
+        self._emitter = LogSignalEmitter()
+        self._emitter.log_signal.connect(self._append_log)
+
+    def _append_log(self, msg):
+        """槽函数，在主线程中执行 GUI 更新"""
+        self.text_edit.append(msg)
+        self.text_edit.ensureCursorVisible()
 
     def emit(self, record):
         msg = self.format(record)
@@ -25,9 +42,8 @@ class QTextEditHandler(logging.Handler):
             msg = f"<b style='color:orange;'>{msg}</b>"  # Display warnings in orange
         else:
             msg = f"<span>{msg}</span>"  # 默认使用普通字体
-        # Append the message to the text edit and reset the cursor position
-        self.text_edit.append(msg)
-        self.text_edit.ensureCursorVisible()  # Ensure the latest log is visible
+        # 通过信号发送消息，确保在主线程中更新 GUI
+        self._emitter.log_signal.emit(msg)
 
 class SimpleFormatter(logging.Formatter):
     """自定义格式化器，将日志级别缩写并调整时间格式"""
