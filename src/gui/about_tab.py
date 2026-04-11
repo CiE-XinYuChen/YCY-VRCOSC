@@ -1,6 +1,6 @@
 # src/gui/about_tab.py
 import asyncio
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox, QTextEdit
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
 from PySide6.QtCore import QLocale
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
@@ -18,15 +18,13 @@ class AboutTab(QWidget):
         self.version_layout = QVBoxLayout()
         self.version_layout_label = QLabel(_('about_tab.current_version') + ": " + self.main_window.update_handler.current_version)
         self.version_layout.addWidget(self.version_layout_label)
+
+        self.update_disabled_label = QLabel(_('about_tab.online_update_disabled'))
+        self.version_layout.addWidget(self.update_disabled_label)
         
         # 按钮布局 - 使用水平布局让两个按钮并排
         self.buttons_layout = QHBoxLayout()
-        
-        # 检查更新按钮
-        self.check_update_btn = QPushButton(_('about_tab.check_update'))
-        self.check_update_btn.clicked.connect(self.check_update)
-        self.buttons_layout.addWidget(self.check_update_btn)
-        
+
         # 问题反馈按钮
         self.feedback_btn = QPushButton(_('about_tab.feedback'))
         self.feedback_btn.clicked.connect(self.open_feedback)
@@ -34,12 +32,6 @@ class AboutTab(QWidget):
         
         # 将按钮布局添加到版本布局中
         self.version_layout.addLayout(self.buttons_layout)
-        
-        # 自动更新选项
-        self.auto_check = QCheckBox(_('about_tab.automatic_update_check'))
-        self.auto_check.setChecked(self.main_window.settings.get('auto_update', False))
-        self.auto_check.stateChanged.connect(self.toggle_auto_update)
-        self.version_layout.addWidget(self.auto_check)
         
         # 贡献信息
         contributors = QTextEdit()
@@ -78,14 +70,10 @@ class AboutTab(QWidget):
         layout.addLayout(self.version_layout)
         layout.addWidget(contributors)
         self.setLayout(layout)
-    
-    def toggle_auto_update(self, state):
-        self.main_window.settings['auto_update'] = state == 2  # Qt.Checked状态值为2
-        self.main_window.save_settings()
 
     def check_update(self):
         # 防止多次点击
-        if not self.check_update_btn.isEnabled():
+        if not hasattr(self, 'check_update_btn') or not self.check_update_btn.isEnabled():
             return
         self.check_update_btn.setEnabled(False)
         async def do_check():
@@ -101,8 +89,6 @@ class AboutTab(QWidget):
 
     def update_ui_texts(self):
         """更新UI上的所有文本为当前语言"""
-        self.check_update_btn.setText(_('about_tab.check_update'))
         self.feedback_btn.setText(_('about_tab.feedback'))
-        # 更新标签文本
-        self.auto_check.setText(_('about_tab.automatic_update_check'))
+        self.update_disabled_label.setText(_('about_tab.online_update_disabled'))
         self.version_layout_label.setText(_('about_tab.current_version') + ": " + self.main_window.update_handler.current_version)

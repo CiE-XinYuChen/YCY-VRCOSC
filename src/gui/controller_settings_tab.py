@@ -9,6 +9,7 @@ from pydglab_ws import Channel, StrengthOperationType
 from pulse_data import PULSE_NAME
 from command_types import CommandType
 from i18n import translate as _, language_signals
+from config import save_settings
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,18 @@ class ControllerSettingsTab(QWidget):
         self.adjust_strength_step_spinbox.setValue(5)
         self.controller_form.addRow(_("controller_tab.adjust_step") + ":", self.adjust_strength_step_spinbox)
 
+        self.osc_soft_limit_a_spinbox = QSpinBox()
+        self.osc_soft_limit_a_spinbox.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+        self.osc_soft_limit_a_spinbox.setRange(0, 200)
+        self.osc_soft_limit_a_spinbox.setValue(self.main_window.settings.get('osc_soft_limit_a', 200))
+        self.controller_form.addRow(f"A {_('controller_tab.osc_soft_limit')}:", self.osc_soft_limit_a_spinbox)
+
+        self.osc_soft_limit_b_spinbox = QSpinBox()
+        self.osc_soft_limit_b_spinbox.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
+        self.osc_soft_limit_b_spinbox.setRange(0, 200)
+        self.osc_soft_limit_b_spinbox.setValue(self.main_window.settings.get('osc_soft_limit_b', 200))
+        self.controller_form.addRow(f"B {_('controller_tab.osc_soft_limit')}:", self.osc_soft_limit_b_spinbox)
+
         self.controller_group.setLayout(self.controller_form)
         self.layout.addRow(self.controller_group)
 
@@ -144,6 +157,8 @@ class ControllerSettingsTab(QWidget):
         self.adjust_strength_step_spinbox.valueChanged.connect(self.update_adjust_strength_step)
         self.pulse_mode_a_combobox.currentIndexChanged.connect(self.update_pulse_mode_a)
         self.pulse_mode_b_combobox.currentIndexChanged.connect(self.update_pulse_mode_b)
+        self.osc_soft_limit_a_spinbox.valueChanged.connect(self.update_osc_soft_limit_a)
+        self.osc_soft_limit_b_spinbox.valueChanged.connect(self.update_osc_soft_limit_b)
         self.enable_chatbox_status_checkbox.stateChanged.connect(self.update_chatbox_status)
         
         # 连接命令类型控制复选框
@@ -159,6 +174,8 @@ class ControllerSettingsTab(QWidget):
             self.dg_controller = self.main_window.controller
             self.dg_controller.fire_mode_strength_step = self.strength_step_spinbox.value()
             self.dg_controller.adjust_strength_step = self.adjust_strength_step_spinbox.value()
+            self.dg_controller.osc_soft_limit_a = self.osc_soft_limit_a_spinbox.value()
+            self.dg_controller.osc_soft_limit_b = self.osc_soft_limit_b_spinbox.value()
             self.dg_controller.pulse_mode_a = self.pulse_mode_a_combobox.currentIndex()
             self.dg_controller.pulse_mode_b = self.pulse_mode_b_combobox.currentIndex()
             self.dg_controller.enable_chatbox_status = self.enable_chatbox_status_checkbox.isChecked()
@@ -199,6 +216,8 @@ class ControllerSettingsTab(QWidget):
             self.enable_chatbox_status_checkbox.blockSignals(True)
             self.strength_step_spinbox.blockSignals(True)
             self.adjust_strength_step_spinbox.blockSignals(True)
+            self.osc_soft_limit_a_spinbox.blockSignals(True)
+            self.osc_soft_limit_b_spinbox.blockSignals(True)
             self.pulse_mode_a_combobox.blockSignals(True)
             self.pulse_mode_b_combobox.blockSignals(True)
             
@@ -213,6 +232,8 @@ class ControllerSettingsTab(QWidget):
             self.enable_chatbox_status_checkbox.setChecked(controller.enable_chatbox_status)
             self.strength_step_spinbox.setValue(controller.fire_mode_strength_step)
             self.adjust_strength_step_spinbox.setValue(controller.adjust_strength_step)
+            self.osc_soft_limit_a_spinbox.setValue(controller.osc_soft_limit_a)
+            self.osc_soft_limit_b_spinbox.setValue(controller.osc_soft_limit_b)
             self.pulse_mode_a_combobox.setCurrentIndex(controller.pulse_mode_a)
             self.pulse_mode_b_combobox.setCurrentIndex(controller.pulse_mode_b)
             
@@ -225,9 +246,12 @@ class ControllerSettingsTab(QWidget):
             self.enable_chatbox_status_checkbox.blockSignals(False)
             self.strength_step_spinbox.blockSignals(False)
             self.adjust_strength_step_spinbox.blockSignals(False)
+            self.osc_soft_limit_a_spinbox.blockSignals(False)
+            self.osc_soft_limit_b_spinbox.blockSignals(False)
             self.pulse_mode_a_combobox.blockSignals(False)
             self.pulse_mode_b_combobox.blockSignals(False)
             
+            self.update_channel_strength_labels(controller.last_strength)
             logger.info("已从控制器同步UI状态")
 
     # Controller update methods
@@ -257,6 +281,25 @@ class ControllerSettingsTab(QWidget):
             controller.pulse_mode_b = index
             logger.info(f"更新 B 通道脉冲模式为 {PULSE_NAME[index]}")
             # 脉冲模式已更新，会在下一次周期任务中自动应用
+
+    def save_controller_settings(self):
+        self.main_window.settings['osc_soft_limit_a'] = self.osc_soft_limit_a_spinbox.value()
+        self.main_window.settings['osc_soft_limit_b'] = self.osc_soft_limit_b_spinbox.value()
+        save_settings(self.main_window.settings)
+
+    def update_osc_soft_limit_a(self, value):
+        if self.main_window.controller:
+            self.main_window.controller.osc_soft_limit_a = value
+        self.save_controller_settings()
+        self.update_channel_strength_labels(self.main_window.controller.last_strength if self.main_window.controller else None)
+        logger.info(f"更新 A 通道 OSC 软上限为 {value}")
+
+    def update_osc_soft_limit_b(self, value):
+        if self.main_window.controller:
+            self.main_window.controller.osc_soft_limit_b = value
+        self.save_controller_settings()
+        self.update_channel_strength_labels(self.main_window.controller.last_strength if self.main_window.controller else None)
+        logger.info(f"更新 B 通道 OSC 软上限为 {value}")
 
     def update_chatbox_status(self, state):
         if self.main_window.controller:
@@ -336,26 +379,66 @@ class ControllerSettingsTab(QWidget):
         else:
             self.current_channel_label.setText(_("controller_tab.current_panel") + ": " + _("controller_tab.not_set"))
 
-    def update_channel_strength_labels(self, strength_data):
-        logger.info(f"通道状态已更新 - A通道强度: {strength_data.a}, B通道强度: {strength_data.b}")
-        if self.main_window.controller and self.main_window.controller.last_strength:
-            # 仅当允许外部更新时更新 A 通道滑动条
-            if self.allow_a_channel_update:
-                self.a_channel_slider.blockSignals(True)
-                self.a_channel_slider.setRange(0, self.main_window.controller.last_strength.a_limit)  # 根据限制更新范围
-                self.a_channel_slider.setValue(self.main_window.controller.last_strength.a)
-                self.a_channel_slider.blockSignals(False)
-                self.a_channel_label.setText(
-                    f"A {_('controller_tab.channel_intensity')}: {self.main_window.controller.last_strength.a} {_('controller_tab.intensity_limit')}: {self.main_window.controller.last_strength.a_limit}  {_('controller_tab.waveform')}: {PULSE_NAME[self.main_window.controller.pulse_mode_a]}")
+    def _format_channel_label(self, channel_name, current_strength, device_limit, pulse_mode, osc_soft_limit):
+        return (
+            f"{channel_name} {_('controller_tab.channel_intensity')}: {current_strength} "
+            f"{_('controller_tab.intensity_limit')}: {device_limit} "
+            f"{_('controller_tab.osc_soft_limit')}: {osc_soft_limit} "
+            f"{_('controller_tab.waveform')}: {PULSE_NAME[pulse_mode]}"
+        )
 
-            # 仅当允许外部更新时更新 B 通道滑动条
-            if self.allow_b_channel_update:
-                self.b_channel_slider.blockSignals(True)
-                self.b_channel_slider.setRange(0, self.main_window.controller.last_strength.b_limit)  # 根据限制更新范围
-                self.b_channel_slider.setValue(self.main_window.controller.last_strength.b)
-                self.b_channel_slider.blockSignals(False)
-                self.b_channel_label.setText(
-                    f"B {_('controller_tab.channel_intensity')}: {self.main_window.controller.last_strength.b} {_('controller_tab.intensity_limit')}: {self.main_window.controller.last_strength.b_limit}  {_('controller_tab.waveform')}: {PULSE_NAME[self.main_window.controller.pulse_mode_b]}")
+    def reset_channel_strength_display(self):
+        for slider in (self.a_channel_slider, self.b_channel_slider):
+            slider.blockSignals(True)
+            slider.setRange(0, 100)
+            slider.setValue(0)
+            slider.blockSignals(False)
+
+        self.a_channel_label.setText(
+            self._format_channel_label("A", 0, 100, self.pulse_mode_a_combobox.currentIndex(), self.osc_soft_limit_a_spinbox.value())
+        )
+        self.b_channel_label.setText(
+            self._format_channel_label("B", 0, 100, self.pulse_mode_b_combobox.currentIndex(), self.osc_soft_limit_b_spinbox.value())
+        )
+
+    def update_channel_strength_labels(self, strength_data):
+        controller = self.main_window.controller
+        if strength_data is None or controller is None:
+            self.reset_channel_strength_display()
+            return
+
+        logger.debug(f"通道状态已更新 - A通道强度: {strength_data.a}, B通道强度: {strength_data.b}")
+
+        if self.allow_a_channel_update:
+            self.a_channel_slider.blockSignals(True)
+            self.a_channel_slider.setRange(0, strength_data.a_limit)
+            self.a_channel_slider.setValue(strength_data.a)
+            self.a_channel_slider.blockSignals(False)
+
+        if self.allow_b_channel_update:
+            self.b_channel_slider.blockSignals(True)
+            self.b_channel_slider.setRange(0, strength_data.b_limit)
+            self.b_channel_slider.setValue(strength_data.b)
+            self.b_channel_slider.blockSignals(False)
+
+        self.a_channel_label.setText(
+            self._format_channel_label(
+                "A",
+                strength_data.a,
+                strength_data.a_limit,
+                controller.pulse_mode_a,
+                controller.osc_soft_limit_a,
+            )
+        )
+        self.b_channel_label.setText(
+            self._format_channel_label(
+                "B",
+                strength_data.b,
+                strength_data.b_limit,
+                controller.pulse_mode_b,
+                controller.osc_soft_limit_b,
+            )
+        )
 
 
     # 命令类型控制方法
@@ -416,32 +499,45 @@ class ControllerSettingsTab(QWidget):
 
     def update_ui_texts(self):
         """更新所有UI文本为当前语言"""
-        # 更新分组框标题
         self.controller_group.setTitle(_("controller_tab.title"))
         self.command_types_group.setTitle(_("controller_tab.command_sources"))
-        
-        # 更新标签和复选框文本
-        self.a_channel_label.setText(f"A {_('controller_tab.intensity')}: {self.a_channel_slider.value() if self.a_channel_slider else 0} / 100")
-        self.b_channel_label.setText(f"B {_('controller_tab.intensity')}: {self.b_channel_slider.value() if self.b_channel_slider else 0} / 100")
-        
-        self.enable_chatbox_status_checkbox.setText(_("controller_tab.enable_chatbox"))
-        
-        # 更新步长标签
+
         for i in range(self.controller_form.rowCount()):
             label_item = self.controller_form.itemAt(i, QFormLayout.LabelRole)
-            if label_item and label_item.widget():
-                label_widget = label_item.widget()
-                if isinstance(label_widget, QLabel):
-                    if label_widget.text().startswith("强度步长"):
-                        label_widget.setText(_("controller_tab.strength_step") + ":")
-                    elif label_widget.text().startswith("调节步长"):
-                        label_widget.setText(_("controller_tab.adjust_step") + ":")
-        
-        # 更新命令控制复选框文本
+            field_item = self.controller_form.itemAt(i, QFormLayout.FieldRole)
+            if not label_item or not label_item.widget() or not isinstance(label_item.widget(), QLabel):
+                continue
+            label_widget = label_item.widget()
+            if not field_item or not field_item.widget():
+                continue
+            field_widget = field_item.widget()
+            if field_widget == self.pulse_mode_a_combobox:
+                label_widget.setText(f"A {_('controller_tab.waveform')}:")
+            elif field_widget == self.pulse_mode_b_combobox:
+                label_widget.setText(f"B {_('controller_tab.waveform')}:")
+            elif field_widget == self.strength_step_spinbox:
+                label_widget.setText(_("controller_tab.strength_step") + ":")
+            elif field_widget == self.adjust_strength_step_spinbox:
+                label_widget.setText(_("controller_tab.adjust_step") + ":")
+            elif field_widget == self.osc_soft_limit_a_spinbox:
+                label_widget.setText(f"A {_('controller_tab.osc_soft_limit')}:")
+            elif field_widget == self.osc_soft_limit_b_spinbox:
+                label_widget.setText(f"B {_('controller_tab.osc_soft_limit')}:")
+
+        for i in range(self.command_types_form.rowCount()):
+            label_item = self.command_types_form.itemAt(i, QFormLayout.LabelRole)
+            field_item = self.command_types_form.itemAt(i, QFormLayout.FieldRole)
+            if not label_item or not label_item.widget() or not isinstance(label_item.widget(), QLabel):
+                continue
+            label_widget = label_item.widget()
+            if field_item and field_item.layout():
+                label_widget.setText(_("controller_tab.enable_interaction") + ":")
+
+        self.update_channel_strength_labels(self.main_window.controller.last_strength if self.main_window.controller else None)
+        self.enable_chatbox_status_checkbox.setText(_("controller_tab.enable_chatbox"))
         self.enable_gui_commands_checkbox.setText(_("controller_tab.enable_gui_control"))
         self.enable_panel_commands_checkbox.setText(_("controller_tab.enable_soundpad"))
-        
-        # 更新当前通道显示
+
         current_text = self.current_channel_label.text()
         if ":" in current_text:
             channel_name = current_text.split(":", 1)[1].strip()
@@ -449,24 +545,7 @@ class ControllerSettingsTab(QWidget):
                 self.current_channel_label.setText(_("controller_tab.current_panel") + f": {channel_name}")
             else:
                 self.current_channel_label.setText(_("controller_tab.current_panel") + ": " + _("controller_tab.not_set"))
-        
-        # 更新交互控制标签和复选框
+
         self.enable_interaction_commands_a_checkbox.setText(f"A {_('controller_tab.interaction_control')}")
         self.enable_interaction_commands_b_checkbox.setText(f"B {_('controller_tab.interaction_control')}")
-        
-        # 更新交互控制标签
-        for i in range(self.command_types_form.rowCount()):
-            label_item = self.command_types_form.itemAt(i, QFormLayout.LabelRole)
-            if label_item and label_item.widget():
-                label_widget = label_item.widget()
-                if isinstance(label_widget, QLabel) and label_widget.text().startswith("启用交互"):
-                    # 创建新的水平布局
-                    interaction_layout = QHBoxLayout()
-                    interaction_layout.addWidget(self.enable_interaction_commands_a_checkbox)
-                    interaction_layout.addWidget(self.enable_interaction_commands_b_checkbox)
-                    
-                    self.command_types_form.removeRow(i)
-                    self.command_types_form.insertRow(i, _("controller_tab.enable_interaction") + ":", interaction_layout)
-                    break
-        
         self.enable_ton_commands_checkbox.setText(_("controller_tab.enable_game_integration"))

@@ -30,7 +30,11 @@ DEFAULT_SETTINGS = {
     'port': 5678,
     'osc_port': 9001,
     'remote_address': '',
-    'language': 'zh'  # 添加默认语言设置
+    'enable_remote': False,
+    'language': 'zh',
+    'auto_update': True,
+    'osc_soft_limit_a': 200,
+    'osc_soft_limit_b': 200,
 }
 
 # Get active IP addresses (unchanged)

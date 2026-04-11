@@ -188,6 +188,7 @@ class LogViewerTab(QWidget):
                 f"== {_('log_tab.controller_status')} ==\n"
                 f"{_('log_tab.device_online')}: {controller.app_status_online}\n"
                 f"{_('log_tab.fire_strength')}: {controller.fire_mode_strength_step}\n"
+                f"{_('controller_tab.osc_soft_limit')}: A={controller.osc_soft_limit_a} B={controller.osc_soft_limit_b}\n"
                 f"{_('log_tab.chatbox_status')}: {controller.enable_chatbox_status}\n"
                 f"{_('log_tab.current_channel')}: {'A' if controller.current_select_channel == Channel.A else 'B'}\n"
                 f"\n== {_('log_tab.command_status')} ==\n"

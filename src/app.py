@@ -21,6 +21,7 @@ from gui.about_tab import AboutTab
 
 #软件版本
 software_version = version.VERSION
+ONLINE_UPDATE_ENABLED = False
 
 setup_logging()
 # Configure the logger
@@ -55,12 +56,17 @@ class MainWindow(QMainWindow):
             'ip': '',
             'port': 5678,
             'osc_port': 9001,
-            'auto_update': True
+            'remote_address': '',
+            'enable_remote': False,
+            'auto_update': True,
+            'osc_soft_limit_a': 200,
+            'osc_soft_limit_b': 200,
         }
 
         self.settings = load_settings() or {}
         for key, value in default_settings.items():
             self.settings.setdefault(key, value)
+        self.settings['auto_update'] = False
         # Load settings from file or use defaults
 
         # 初始化更新处理器
@@ -124,12 +130,17 @@ class MainWindow(QMainWindow):
     
 
     async def auto_update_check(self):
+        if not ONLINE_UPDATE_ENABLED:
+            return None
         result = await self.update_handler.check_update(manual_check=False)
         if result and result["available"]:
             self.show_update_dialog(result["release_info"])
 
     async def check_update_manual(self):
         """手动检查更新的入口方法"""
+        if not ONLINE_UPDATE_ENABLED:
+            QMessageBox.information(self, _('about_tab.check_update'), _('about_tab.online_update_disabled'))
+            return
         try:
             # 使用async with创建独立任务上下文
             async with asyncio.TaskGroup() as tg:
@@ -197,12 +208,6 @@ if __name__ == "__main__":
 
     window = MainWindow()
     window.show()
-
-    # 在事件循环启动后安排 auto_update_check
-    async def start_auto_update():
-        if window.settings.get('auto_update', False):
-            await window.auto_update_check()
-    loop.create_task(start_auto_update())
 
     with loop:
         loop.run_forever()

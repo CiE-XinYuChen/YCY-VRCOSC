@@ -46,19 +46,24 @@ class DGLabController:
         self.main_window = ui_callback
         self.last_strength = None  # 记录上次的强度值, 从 app更新, 包含 a b a_limit b_limit
         self.app_status_online = False  # App 端在线情况
+        settings = getattr(self.main_window, 'settings', {}) or {}
         # 功能控制参数
         self.pulse_mode_a = 0  # pulse mode for Channel A (双向 - 更新名称)
         self.pulse_mode_b = 0  # pulse mode for Channel B (双向 - 更新名称)
         self.current_select_channel = Channel.A  # 游戏内面板控制的通道选择, 默认为 A (双向)
         self.fire_mode_strength_step = 30    # 一键开火默认强度 (双向)
         self.adjust_strength_step = 5    # 按钮3和按钮4调节强度的步进值
+        self.osc_soft_limit_a = int(settings.get('osc_soft_limit_a', 200))
+        self.osc_soft_limit_b = int(settings.get('osc_soft_limit_b', 200))
         self.fire_mode_active = False  # 标记当前是否在进行开火操作
         self.fire_mode_lock = asyncio.Lock()  # 一键开火模式锁
+        self.bluetooth_lock = asyncio.Lock()
         self.data_updated_event = asyncio.Event()  # 数据更新事件
         self.fire_mode_origin_strength_a = 0  # 进入一键开火模式前的强度值
         self.fire_mode_origin_strength_b = 0
         self.enable_chatbox_status = 1  # ChatBox 发送状态 (双向，游戏内暂无直接开关变量)
         self.previous_chatbox_status = 1
+        self.panel_control_enabled = True
         # 定时任务
         self.send_status_task = asyncio.create_task(self.periodic_status_update())  # 启动ChatBox发送任务
         self.send_pulse_task = asyncio.create_task(self.periodic_send_pulse_data())  # 启动设定波形发送任务
@@ -109,6 +114,101 @@ class DGLabController:
                 "last_command_time": 0,
             }
         }
+
+    def get_hard_limit(self, channel):
+        """获取设备当前硬上限，未拿到设备状态时回退到默认值。"""
+        if self.last_strength:
+            return self.last_strength.a_limit if channel == Channel.A else self.last_strength.b_limit
+        return 200
+
+    def get_osc_soft_limit(self, channel):
+        if channel == Channel.A:
+            return max(0, int(self.osc_soft_limit_a))
+        return max(0, int(self.osc_soft_limit_b))
+
+    def get_effective_limit(self, channel, command_type):
+        hard_limit = self.get_hard_limit(channel)
+        if command_type in (CommandType.PANEL_COMMAND, CommandType.INTERACTION_COMMAND):
+            return min(hard_limit, self.get_osc_soft_limit(channel))
+        return hard_limit
+
+    def clamp_strength_value(self, channel, command_type, value):
+        return max(0, min(int(value), self.get_effective_limit(channel, command_type)))
+
+    def sync_strength_data(self, strength_data):
+        """使用设备回报刷新内部状态，避免 UI 和面板逻辑长期漂移。"""
+        self.last_strength = strength_data
+        self.app_status_online = True
+        self.channel_states[Channel.A]["current_strength"] = strength_data.a
+        self.channel_states[Channel.A]["target_strength"] = strength_data.a
+        self.channel_states[Channel.B]["current_strength"] = strength_data.b
+        self.channel_states[Channel.B]["target_strength"] = strength_data.b
+
+    def mark_device_disconnected(self):
+        self.app_status_online = False
+        self.last_strength = None
+        self.fire_mode_active = False
+        self.data_updated_event.clear()
+        self.pulse_last_update_time = {}
+        for channel in (Channel.A, Channel.B):
+            self.channel_states[channel]["current_strength"] = 0
+            self.channel_states[channel]["target_strength"] = 0
+
+    def supports_bluetooth_management(self):
+        return hasattr(self.client, '_ble_thread') and hasattr(self.client, '_client')
+
+    def is_bluetooth_connected(self):
+        return bool(getattr(self.client, 'connected', False))
+
+    def _run_ble_client_action(self, action_name, timeout=15.0):
+        ble_thread = getattr(self.client, '_ble_thread', None)
+        ble_client = getattr(self.client, '_client', None)
+        if not ble_thread or not ble_client:
+            return False
+
+        action = getattr(ble_client, action_name, None)
+        if action is None:
+            return False
+
+        return ble_thread.run_coro(action(), timeout=timeout)
+
+    async def disconnect_bluetooth(self):
+        """断开底层 BLE 连接，并重置前端可见状态。"""
+        if not self.supports_bluetooth_management():
+            logger.warning("当前客户端不支持蓝牙断开控制")
+            return False
+
+        async with self.bluetooth_lock:
+            if not self.is_bluetooth_connected():
+                self.mark_device_disconnected()
+                return True
+
+            stop_ok = await asyncio.to_thread(self._run_ble_client_action, "stop_all", 10.0)
+            disconnect_ok = await asyncio.to_thread(self._run_ble_client_action, "disconnect", 15.0)
+
+            if not disconnect_ok and stop_ok:
+                logger.warning("蓝牙输出已停止，但断开连接失败")
+
+            if disconnect_ok:
+                self.mark_device_disconnected()
+            return bool(disconnect_ok)
+
+    async def reconnect_bluetooth(self):
+        """重连当前 BLE 设备，不重建整个控制器和 OSC 服务。"""
+        if not self.supports_bluetooth_management():
+            logger.warning("当前客户端不支持蓝牙重连控制")
+            return False
+
+        async with self.bluetooth_lock:
+            if self.is_bluetooth_connected():
+                await asyncio.to_thread(self._run_ble_client_action, "disconnect", 15.0)
+
+            reconnect_ok = await asyncio.to_thread(self._run_ble_client_action, "connect", 20.0)
+            if reconnect_ok:
+                self.pulse_last_update_time = {}
+            else:
+                self.mark_device_disconnected()
+            return bool(reconnect_ok)
 
     async def periodic_status_update(self):
         """
@@ -257,6 +357,13 @@ class DGLabController:
                         await self.set_pulse_data(value, self.current_select_channel, pulse_index)
         except Exception as e:
             logger.error(f"处理面板 OSC 消息出错: {e}", exc_info=True)
+
+    async def set_panel_control(self, value):
+        """
+        SoundPad 会同步面板开关状态，这里只记录状态，避免因缺失实现导致整套面板控制报错。
+        """
+        self.panel_control_enabled = bool(value)
+        logger.info(f"面板控制状态: {'启用' if self.panel_control_enabled else '关闭'}")
 
     async def handle_osc_message_pb(self, address, value, channels=None, mapping_ranges=None):
         """
@@ -600,6 +707,13 @@ class DGLabController:
                 channel_state = self.channel_states[command.channel]
                 channel_state["last_command_source"] = command.source_id
                 channel_state["last_command_time"] = command.timestamp
+
+                if command.operation == StrengthOperationType.SET_TO:
+                    command.value = self.clamp_strength_value(
+                        command.channel,
+                        command.command_type,
+                        command.value,
+                    )
                 
                 # 根据命令类型和操作进行相应处理
                 if command.operation == StrengthOperationType.SET_TO:
@@ -607,8 +721,7 @@ class DGLabController:
                     await self.client.set_strength(command.channel, command.operation, command.value)
                     logger.info(f"已设置通道 {command.channel.name} 强度为 {command.value}, 来源: {command.source_id}")
                 elif command.operation == StrengthOperationType.INCREASE:
-                    # 获取当前通道限制
-                    limit = self.last_strength.a_limit if command.channel == Channel.A else self.last_strength.b_limit
+                    limit = self.get_effective_limit(command.channel, command.command_type)
                     # 计算新目标强度并应用
                     new_strength = min(channel_state["current_strength"] + command.value, limit)
                     channel_state["target_strength"] = new_strength
