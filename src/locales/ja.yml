@@ -1,6 +1,5 @@
-# 日本語翻訳ファイル
 main:
-  title: "DG-Lab WebSocket Controller for VRChat"
+  title: "YokoNex Toy Controller for VRChat"
   tabs:
     network: "ネットワーク設定"
     controller: "コントローラー設定"

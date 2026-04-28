@@ -1,98 +1,58 @@
-import os
-import sys
-import yaml
-import psutil
-import socket
-import ipaddress
-
 import logging
+import os
+import socket
+import sys
+
+import psutil
+import yaml
+
 logger = logging.getLogger(__name__)
 
-def get_config_file_path(filename):
-    """
-    获取配置文件的绝对路径，确保开发和打包后都能正常使用
-    配置文件保存在用户可访问的位置，而不是临时目录
-    """
-    if hasattr(sys, '_MEIPASS'):  # PyInstaller 打包后的环境
-        # 打包后，配置文件保存在可执行文件同目录下
-        exe_dir = os.path.dirname(sys.executable)
-        return os.path.join(exe_dir, filename)
-    else:
-        # 开发环境下，配置文件保存在项目根目录
-        # 从 src 目录跳到项目根目录
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        return os.path.join(project_root, filename)
-
-# 默认设置
 DEFAULT_SETTINGS = {
-    'interface': '',
-    'ip': '',
-    'port': 5678,
-    'osc_port': 9001,
-    'remote_address': '',
-    'enable_remote': False,
-    'language': 'zh',
-    'auto_update': True,
-    'osc_soft_limit_a': 200,
-    'osc_soft_limit_b': 200,
+    "yokonex_host": "127.0.0.1",
+    "yokonex_port": 8765,
+    "osc_port":     9001,
+    "language":     "zh",
 }
 
-# Get active IP addresses (unchanged)
-def get_active_ip_addresses():
-    ip_addresses = {}
-    for interface, addrs in psutil.net_if_addrs().items():
-        if psutil.net_if_stats()[interface].isup:
+
+def get_config_file_path(filename: str) -> str:
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(os.path.dirname(sys.executable), filename)
+    return os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+        filename,
+    )
+
+
+def get_active_ip_addresses() -> dict:
+    result = {}
+    for iface, addrs in psutil.net_if_addrs().items():
+        if psutil.net_if_stats()[iface].isup:
             for addr in addrs:
                 if addr.family == socket.AF_INET:
-                    ip_addresses[interface] = addr.address
-    return ip_addresses
+                    result[iface] = addr.address
+    return result
 
-# Validate IP address (unchanged)
-def validate_ip(ip):
-    try:
-        ipaddress.ip_address(ip)
-        return True
-    except ValueError:
-        return False
 
-# Validate port (unchanged)
-def validate_port(port):
-    try:
-        port = int(port)
-        return 0 < port < 65536
-    except ValueError:
-        return False
-
-# Load the configuration from a YAML file
-def load_settings():
-    settings_path = get_config_file_path('settings.yml')
-    logger.info(f"尝试从 {settings_path} 加载设置配置")
-
-    if os.path.exists(settings_path):
+def load_settings() -> dict:
+    path = get_config_file_path("settings.yml")
+    if os.path.exists(path):
         try:
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                logger.info("settings.yml found")
-                settings = yaml.safe_load(f) or {}
-
-                # 确保所有设置都存在
-                for key, value in DEFAULT_SETTINGS.items():
-                    if key not in settings:
-                        settings[key] = value
-
-                return settings
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            for k, v in DEFAULT_SETTINGS.items():
+                data.setdefault(k, v)
+            return data
         except Exception as e:
-            logger.error(f"加载设置文件时出错: {str(e)}")
-            return DEFAULT_SETTINGS.copy()
-
-    logger.info("No settings.yml found, using default settings")
+            logger.error("Load settings failed: %s", e)
     return DEFAULT_SETTINGS.copy()
 
-# Save the configuration to a YAML file
-def save_settings(settings):
-    settings_path = get_config_file_path('settings.yml')
+
+def save_settings(settings: dict) -> None:
+    path = get_config_file_path("settings.yml")
     try:
-        with open(settings_path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump(settings, f, allow_unicode=True)
-            logger.info(f"settings.yml saved to {settings_path}")
     except Exception as e:
-        logger.error(f"保存设置文件时出错: {str(e)}")
+        logger.error("Save settings failed: %s", e)
