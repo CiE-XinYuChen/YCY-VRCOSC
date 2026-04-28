@@ -1,11 +1,10 @@
 # src/gui/about_tab.py
 import asyncio
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
-from PySide6.QtCore import QLocale
+from PySide6.QtCore import QLocale, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtCore import QUrl
-# from i18n import translate, language_signals
 from i18n import translate as _, language_signals
+import version
 
 class AboutTab(QWidget):
     def __init__(self, main_window):
@@ -16,7 +15,7 @@ class AboutTab(QWidget):
         
         # 版本信息
         self.version_layout = QVBoxLayout()
-        self.version_layout_label = QLabel(_('about_tab.current_version') + ": " + self.main_window.update_handler.current_version)
+        self.version_layout_label = QLabel(_('about_tab.current_version') + ": " + version.VERSION)
         self.version_layout.addWidget(self.version_layout_label)
 
         self.update_disabled_label = QLabel(_('about_tab.online_update_disabled'))
@@ -91,4 +90,4 @@ class AboutTab(QWidget):
         """更新UI上的所有文本为当前语言"""
         self.feedback_btn.setText(_('about_tab.feedback'))
         self.update_disabled_label.setText(_('about_tab.online_update_disabled'))
-        self.version_layout_label.setText(_('about_tab.current_version') + ": " + self.main_window.update_handler.current_version)
+        self.version_layout_label.setText(_('about_tab.current_version') + ": " + version.VERSION)
