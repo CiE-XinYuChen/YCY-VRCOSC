@@ -135,16 +135,6 @@ src/
 
 ---
 
-## 依赖
-
-| 包 | 用途 |
-|----|------|
-| PySide6 | GUI |
-| qasync | Qt + asyncio 集成 |
-| websockets | YokoNex WS 通信 |
-| python-osc | 接收 VRChat OSC |
-| pyyaml | 配置文件 |
-| psutil | 网卡枚举 |
 
 ---
 
