@@ -48,7 +48,7 @@ class ControllerSettingsTab(QWidget):
 
             sld = QSlider(Qt.Horizontal)
             sld.setLocale(_EN)
-            sld.setRange(0, 100)
+            sld.setRange(0, 20)
             sld.sliderPressed.connect(lambda _m=m: self._on_slider_pressed(_m))
             sld.sliderReleased.connect(lambda _m=m: self._on_slider_released(_m))
             sld.valueChanged.connect(lambda v, _m=m: self._on_slider_changed(_m, v))
@@ -75,15 +75,15 @@ class ControllerSettingsTab(QWidget):
         # Fire / adjust steps
         self.fire_step_spin = QSpinBox()
         self.fire_step_spin.setLocale(_EN)
-        self.fire_step_spin.setRange(0, 100)
-        self.fire_step_spin.setValue(30)
+        self.fire_step_spin.setRange(0, 20)
+        self.fire_step_spin.setValue(5)
         self.fire_step_spin.valueChanged.connect(self._on_fire_step_changed)
         ctrl_form.addRow(str(_("controller_tab.strength_step")) + ":", self.fire_step_spin)
 
         self.adjust_step_spin = QSpinBox()
         self.adjust_step_spin.setLocale(_EN)
-        self.adjust_step_spin.setRange(0, 100)
-        self.adjust_step_spin.setValue(5)
+        self.adjust_step_spin.setRange(0, 20)
+        self.adjust_step_spin.setValue(2)
         self.adjust_step_spin.valueChanged.connect(self._on_adjust_step_changed)
         ctrl_form.addRow(str(_("controller_tab.adjust_step")) + ":", self.adjust_step_spin)
 
@@ -137,6 +137,7 @@ class ControllerSettingsTab(QWidget):
         for m in MOTOR_NAMES:
             sld = self._speed_sliders[m]
             sld.blockSignals(True)
+            sld.setRange(0, 20)
             sld.setValue(0)
             sld.blockSignals(False)
             self._speed_labels[m].setText(self._format_label(m, 0, 1))

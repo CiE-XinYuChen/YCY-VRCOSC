@@ -30,6 +30,7 @@ log = logging.getLogger("yokonex_vrcosc.controller")
 
 MOTOR_NAMES = ("A", "B", "C")
 MOTOR_BITS  = {"A": 1, "B": 2, "C": 4}
+MAX_SPEED   = 20
 MAX_MODES   = 4
 
 
@@ -63,8 +64,8 @@ class ToyController:
         self.current_motor: str           = "A"   # controlled by Page
 
         # Control params
-        self.fire_step   = 30
-        self.adjust_step = 5
+        self.fire_step   = 5
+        self.adjust_step = 2
 
         # Feature toggles
         self.enable_chatbox     = False
@@ -135,7 +136,7 @@ class ToyController:
 
         elif address == "/avatar/parameters/SoundPad/Button/4":
             if value:
-                spd = min(100, self.motor_speeds[m] + self.adjust_step)
+                spd = min(MAX_SPEED, self.motor_speeds[m] + self.adjust_step)
                 await self._enqueue(CommandType.PANEL_COMMAND, m, spd, None, "panel_inc")
 
         elif address == "/avatar/parameters/SoundPad/Button/5":
@@ -176,7 +177,7 @@ class ToyController:
             hi = r.get("max", 100) / 100.0
             if lo > hi:
                 lo, hi = hi, lo
-            spd = int((lo + (hi - lo) * value) * 100)
+            spd = int((lo + (hi - lo) * value) * MAX_SPEED)
             await self._enqueue(CommandType.INTERACTION_COMMAND, m, spd, None,
                                  f"interaction_{address}")
 
@@ -186,7 +187,7 @@ class ToyController:
         async with self._fire_lock:
             if pressed:
                 self._fire_pre_speed[motor] = self.motor_speeds[motor]
-                target = min(100, self.motor_speeds[motor] + self.fire_step)
+                target = min(MAX_SPEED, self.motor_speeds[motor] + self.fire_step)
                 await self._enqueue(CommandType.PANEL_COMMAND, motor, target, None, "fire_start")
                 self._fire_active = True
             else:
@@ -239,7 +240,7 @@ class ToyController:
 
                 # Apply speed change
                 if cmd.speed is not None:
-                    self.motor_speeds[cmd.motor] = max(0, min(100, cmd.speed))
+                    self.motor_speeds[cmd.motor] = max(0, min(MAX_SPEED, cmd.speed))
                     try:
                         await self.client.set_speed(
                             self.device_address,
