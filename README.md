@@ -1,9 +1,8 @@
 # **YCY-VRCOSC**
-本分支支持电击器一代，DJJ-2.0分支支持电击器2代，ZJJPRO支持榨精机PRO设备，理论支持所有Yokonex的跳蛋/飞机杯设备，使用可能略有差异。
 这是与 **VRChat** 游戏联动的役次元 (YCY/YOKONEX) 设备控制程序，通过 VRChat 游戏内的 avatars 互动和其他事件来控制设备的输出。
 
-> 基于 [PyDGLab-WS-for-YCY](https://github.com/CiE-XinYuChen/PyDGLab-WS-for-YCY) 实现电击器功能
-> 基于 [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI) 实现飞机杯功能，后续电击器将迁移到该协议
+> 基于 [PyDGLab-WS-for-YCY](https://github.com/CiE-XinYuChen/PyDGLab-WS-for-YCY) 实现电击器功能， [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI) 实现飞机杯功能，后续电击器将迁移到该协议
+> main分支支持电击器一代，DJJ-2.0分支支持电击器2代，ZJJPRO支持榨精机PRO设备，理论支持所有Yokonex的跳蛋/飞机杯设备，使用可能略有差异。
 
 - **VRChat Avatar 联动功能** ( **OSC**)：
   - **面板控制模式**：通过 VRSuya 的 [SoundPad](https://booth.pm/zh-cn/items/5950846) 进行控制，映射按键到设备功能。同时也支持**远程控制**，你可以通过自己 avatar 上的面板控制其他安装相同面板玩家的设备。
