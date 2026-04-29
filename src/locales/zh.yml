@@ -29,6 +29,10 @@ network_tab:
   device_status: "设备状态"
   device_online: "设备已连接"
   device_offline: "设备未连接"
+  relay_mode: "通过云端中继连接"
+  relay_token: "客户端 Token"
+  relay_agent: "Agent ID"
+  relay_list_agents: "查询…"
 
 controller_tab:
   title: "电机控制"

@@ -61,6 +61,31 @@ class NetworkConfigTab(QWidget):
         self.yokonex_port_spin.setValue(self.main_window.settings.get("yokonex_port", 8765))
         srv_form.addRow(str(_("network_tab.yokonex_port")) + ":", self.yokonex_port_spin)
 
+        # ── Cloud relay mode ──────────────────────────────────────────────
+        self.relay_check = QCheckBox(str(_("network_tab.relay_mode")))
+        self.relay_check.setChecked(self.main_window.settings.get("relay_mode", False))
+        srv_form.addRow(self.relay_check)
+
+        self.relay_token_edit = QLineEdit()
+        self.relay_token_edit.setLocale(_EN)
+        self.relay_token_edit.setPlaceholderText("CLIENT_TOKEN")
+        self.relay_token_edit.setText(self.main_window.settings.get("relay_token", ""))
+        self.relay_token_label = QLabel(str(_("network_tab.relay_token")) + ":")
+        srv_form.addRow(self.relay_token_label, self.relay_token_edit)
+
+        relay_agent_row = QHBoxLayout()
+        self.relay_agent_edit = QLineEdit()
+        self.relay_agent_edit.setLocale(_EN)
+        self.relay_agent_edit.setPlaceholderText("home-pc")
+        self.relay_agent_edit.setText(self.main_window.settings.get("relay_agent_id", ""))
+        self.relay_agent_label = QLabel(str(_("network_tab.relay_agent")) + ":")
+        self.relay_list_btn = QPushButton(str(_("network_tab.relay_list_agents")))
+        relay_agent_row.addWidget(self.relay_agent_edit)
+        relay_agent_row.addWidget(self.relay_list_btn)
+        srv_form.addRow(self.relay_agent_label, relay_agent_row)
+
+        self._set_relay_fields_visible(self.relay_check.isChecked())
+
         self.osc_port_spin = QSpinBox()
         self.osc_port_spin.setLocale(_EN)
         self.osc_port_spin.setRange(1024, 65535)
@@ -132,10 +157,14 @@ class NetworkConfigTab(QWidget):
         self.scan_btn.clicked.connect(self._on_scan_clicked)
         self.connect_device_btn.clicked.connect(self._on_connect_device_clicked)
         self.disconnect_device_btn.clicked.connect(self._on_disconnect_device_clicked)
+        self.relay_check.stateChanged.connect(self._on_relay_toggled)
+        self.relay_list_btn.clicked.connect(self._on_list_agents_clicked)
         self.lang_combo.currentTextChanged.connect(self._on_language_changed)
         self.host_edit.textChanged.connect(self._save_settings)
         self.yokonex_port_spin.valueChanged.connect(self._save_settings)
         self.osc_port_spin.valueChanged.connect(self._save_settings)
+        self.relay_token_edit.textChanged.connect(self._save_settings)
+        self.relay_agent_edit.textChanged.connect(self._save_settings)
 
     # ── Button handlers ────────────────────────────────────────────────────────
 
@@ -153,6 +182,13 @@ class NetworkConfigTab(QWidget):
     def _on_disconnect_device_clicked(self):
         asyncio.create_task(self._disconnect_device())
 
+    def _on_relay_toggled(self, state: int):
+        self._set_relay_fields_visible(bool(state))
+        self._save_settings()
+
+    def _on_list_agents_clicked(self):
+        asyncio.create_task(self._list_and_pick_agent())
+
     # ── Async operations ───────────────────────────────────────────────────────
 
     async def _connect_to_yokonex(self):
@@ -163,16 +199,33 @@ class NetworkConfigTab(QWidget):
         self.connect_btn.setEnabled(False)
         self.connect_btn.setText(str(_("network_tab.connecting")))
 
+        relay_mode = self.relay_check.isChecked()
         client = YokoNexClient(url)
-        ok = await client.connect()
+
+        if relay_mode:
+            token    = self.relay_token_edit.text().strip()
+            agent_id = self.relay_agent_edit.text().strip()
+            if not token or not agent_id:
+                QMessageBox.warning(self, "Error",
+                                    "Cloud relay mode requires both Token and Agent ID.\n"
+                                    "Use the '…' button to list available agents.")
+                self.connect_btn.setEnabled(True)
+                self.connect_btn.setText(str(_("network_tab.connect")))
+                return
+            ok = await client.connect_relay(token, agent_id)
+        else:
+            ok = await client.connect()
 
         if not ok:
             self.connect_btn.setEnabled(True)
             self.connect_btn.setText(str(_("network_tab.connect")))
             self._set_yokonex_status(False)
-            QMessageBox.warning(self, "Error",
-                                f"Cannot connect to YokoNex at {url}\n"
-                                "Make sure 'yokonex server' is running.")
+            hint = (f"Cannot connect to relay at {url}\n"
+                    "Check the server URL, token, and agent ID."
+                    if relay_mode else
+                    f"Cannot connect to YokoNex at {url}\n"
+                    "Make sure 'yokonex server' is running.")
+            QMessageBox.warning(self, "Error", hint)
             return
 
         self._yokonex = client
@@ -192,6 +245,51 @@ class NetworkConfigTab(QWidget):
                 self._update_osc_mappings
             )
             self._osc_signal_connected = True
+
+    async def _list_and_pick_agent(self):
+        """Connect temporarily to relay, fetch agent list, show picker dialog."""
+        host  = self.host_edit.text().strip() or "127.0.0.1"
+        port  = self.yokonex_port_spin.value()
+        token = self.relay_token_edit.text().strip()
+        url   = f"ws://{host}:{port}"
+
+        if not token:
+            QMessageBox.warning(self, "Error", "Enter the Token first.")
+            return
+
+        self.relay_list_btn.setEnabled(False)
+        try:
+            # Temporary connection just to list agents (no subscribe yet)
+            import websockets as _ws
+            import json as _json
+            async with _ws.connect(url, open_timeout=5) as ws:
+                await ws.send(_json.dumps({"type": "client_hello", "token": token}))
+                hello = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                if not hello.get("ok"):
+                    QMessageBox.warning(self, "Error",
+                                        f"Auth failed: {hello.get('message')}")
+                    return
+                await ws.send(_json.dumps({"id": 1, "type": "list_agents"}))
+                resp = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                agents = resp.get("agents", [])
+
+            if not agents:
+                QMessageBox.information(self, "Agents", "No agents online.")
+                return
+
+            # Show simple picker
+            from PySide6.QtWidgets import QInputDialog
+            items = [f"{a['id']}  ({a['clients']} client(s))" for a in agents]
+            item, ok = QInputDialog.getItem(
+                self, "Select Agent", "Choose an agent to connect to:", items, 0, False
+            )
+            if ok and item:
+                chosen_id = agents[items.index(item)]["id"]
+                self.relay_agent_edit.setText(chosen_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to list agents: {e}")
+        finally:
+            self.relay_list_btn.setEnabled(True)
 
     async def _do_scan(self):
         self.scan_btn.setEnabled(False)
@@ -371,10 +469,19 @@ class NetworkConfigTab(QWidget):
     # ── Settings persistence ───────────────────────────────────────────────────
 
     def _save_settings(self):
-        self.main_window.settings["yokonex_host"] = self.host_edit.text().strip()
-        self.main_window.settings["yokonex_port"] = self.yokonex_port_spin.value()
-        self.main_window.settings["osc_port"]     = self.osc_port_spin.value()
+        self.main_window.settings["yokonex_host"]  = self.host_edit.text().strip()
+        self.main_window.settings["yokonex_port"]  = self.yokonex_port_spin.value()
+        self.main_window.settings["osc_port"]      = self.osc_port_spin.value()
+        self.main_window.settings["relay_mode"]    = self.relay_check.isChecked()
+        self.main_window.settings["relay_token"]   = self.relay_token_edit.text().strip()
+        self.main_window.settings["relay_agent_id"] = self.relay_agent_edit.text().strip()
         save_settings(self.main_window.settings)
+
+    def _set_relay_fields_visible(self, visible: bool):
+        for w in (self.relay_token_label, self.relay_token_edit,
+                  self.relay_agent_label, self.relay_agent_edit,
+                  self.relay_list_btn):
+            w.setVisible(visible)
 
     def _on_language_changed(self):
         code = self.lang_combo.currentData()

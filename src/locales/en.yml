@@ -29,6 +29,10 @@ network_tab:
   device_status: "Device Status"
   device_online: "Device Connected"
   device_offline: "Device Offline"
+  relay_mode: "Connect via Cloud Relay"
+  relay_token: "Client Token"
+  relay_agent: "Agent ID"
+  relay_list_agents: "List…"
 
 controller_tab:
   title: "Motor Control"
