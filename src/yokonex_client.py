@@ -50,7 +50,7 @@ class YokoNexClient:
     async def connect(self) -> bool:
         """Connect directly to a yokonex WS server (no auth required)."""
         try:
-            self._ws = await _ws_connect(self.url, open_timeout=5)
+            self._ws = await _ws_connect(self.url, open_timeout=5, ping_interval=None)
             loop = asyncio.get_running_loop()
             ctx  = contextvars.copy_context()
             self._recv_task = loop.create_task(
@@ -67,7 +67,7 @@ class YokoNexClient:
     async def connect_relay(self, token: str, agent_id: str) -> bool:
         """Connect via YokoNex-Cloud relay: auth → subscribe → start recv loop."""
         try:
-            self._ws = await _ws_connect(self.url, open_timeout=5)
+            self._ws = await _ws_connect(self.url, open_timeout=5, ping_interval=None)
 
             # Step 1: authenticate
             await self._ws.send(json.dumps({"type": "client_hello", "token": token}))
@@ -145,6 +145,8 @@ class YokoNexClient:
     # ── Commands ──────────────────────────────────────────────────────────────
 
     async def _send(self, kind: str, params: dict, timeout: float = 10.0) -> dict:
+        if not self._connected:
+            raise ConnectionError("not connected to YokoNex")
         self._counter += 1
         req_id = self._counter
         loop = asyncio.get_running_loop()
@@ -237,7 +239,7 @@ class YokoNexClient:
     async def connect(self) -> bool:
         """Connect directly to a yokonex WS server (no auth required)."""
         try:
-            self._ws = await websockets.connect(self.url, open_timeout=5)
+            self._ws = await websockets.connect(self.url, open_timeout=5, ping_interval=None)
             loop = asyncio.get_running_loop()
             self._recv_task = loop.create_task(self._recv_loop(), name="yokonex-recv")
             self._connected = True
@@ -251,7 +253,7 @@ class YokoNexClient:
     async def connect_relay(self, token: str, agent_id: str) -> bool:
         """Connect via YokoNex-Cloud relay: auth → subscribe → start recv loop."""
         try:
-            self._ws = await websockets.connect(self.url, open_timeout=5)
+            self._ws = await websockets.connect(self.url, open_timeout=5, ping_interval=None)
 
             # Step 1: authenticate
             await self._ws.send(json.dumps({"type": "client_hello", "token": token}))
@@ -326,6 +328,8 @@ class YokoNexClient:
     # ── Commands ──────────────────────────────────────────────────────────────
 
     async def _send(self, kind: str, params: dict, timeout: float = 10.0) -> dict:
+        if not self._connected:
+            raise ConnectionError("not connected to YokoNex")
         self._counter += 1
         req_id = self._counter
         loop = asyncio.get_running_loop()
