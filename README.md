@@ -1,5 +1,4 @@
 # YCY-VRCOSC — YokoNex Fusion Controller for VRChat
-<img width="1072" height="792" alt="148f489e27ca0ff94c2354486a4edf06" src="https://github.com/user-attachments/assets/261c51a1-2d6a-4b0a-95e0-7ed8a85468e4" />
 
 **版本**: v1.0.0 · **开发者**: 可乐Shayne · **协议**: MIT  
 **源仓库**: [DG-LAB-VRCOSC](https://github.com/ccvrc/DG-LAB-VRCOSC)（改造基础）  
@@ -23,6 +22,7 @@
 ## 
 
 ## 项目截图
+<img width="1072" height="792" alt="148f489e27ca0ff94c2354486a4edf06" src="https://github.com/user-attachments/assets/261c51a1-2d6a-4b0a-95e0-7ed8a85468e4" />
 <img width="1072" height="792" alt="d65dedec0478c45be10c83e3a2c4e210" src="https://github.com/user-attachments/assets/0e526070-a3e1-41e9-b816-e28caf2d59fd" />
 <img width="1072" height="792" alt="f24018d858cb5bc15ad5ae8edb40aec9" src="https://github.com/user-attachments/assets/9ffa6c63-343a-4824-b762-a5971cc6d39f" />
 <img width="492" height="605" alt="c3c9bda4a8ec9d19561cf70d8a5c0d4c" src="https://github.com/user-attachments/assets/2e7b28df-f74e-4c83-be46-8c01f5c20782" />
