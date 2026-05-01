@@ -215,7 +215,7 @@ class NetworkConfigTab(QWidget):
     def _on_remove_device_clicked(self):
         _spawn(self._remove_device())
 
-    def _on_selection_changed(self, *_):
+    def _on_selection_changed(self, *_args):
         has = (len(self.device_list.selectedItems()) > 0
                or self.device_list.currentItem() is not None)
         self.remove_device_btn.setEnabled(has)

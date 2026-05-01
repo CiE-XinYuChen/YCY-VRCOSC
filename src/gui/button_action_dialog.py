@@ -81,7 +81,7 @@ class _AddActionDialog(QDialog):
             return "__global__"
         return self._devices.get(addr, {}).get("type", "toy")
 
-    def _on_device_changed(self, *_):
+    def _on_device_changed(self, *_args):
         dtype = self._current_device_type()
         self._action_combo.blockSignals(True)
         self._action_combo.clear()
@@ -97,7 +97,7 @@ class _AddActionDialog(QDialog):
         self._action_combo.blockSignals(False)
         self._on_action_changed()
 
-    def _on_action_changed(self, *_):
+    def _on_action_changed(self, *_args):
         # Clear old widgets
         while self._params_form.rowCount():
             self._params_form.removeRow(0)
