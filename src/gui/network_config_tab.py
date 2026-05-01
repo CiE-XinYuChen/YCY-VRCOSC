@@ -1,662 +1,619 @@
-from PySide6.QtWidgets import (QWidget, QGroupBox, QFormLayout, QComboBox, QSpinBox,
-                               QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QLineEdit, 
-                               QCheckBox, QSizePolicy)
-from PySide6.QtCore import Qt, QLocale
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import QTimer
-import logging
+"""network_config_tab.py — YokoNex server connection + multi-device management + OSC server."""
+from __future__ import annotations
+
 import asyncio
-import requests
+import contextvars
+import functools
+import logging
 
-from config import get_active_ip_addresses, save_settings
-from pydglab_ws import DGLabWSServer, RetCode, StrengthData, FeedbackButton
-from dglab_controller import DGLabController
-from qasync import asyncio
-from pythonosc import osc_server, dispatcher, udp_client
-from i18n import translate as _, language_signals, LANGUAGES, get_current_language, set_language
+from PySide6.QtCore import Qt, QLocale
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+)
+from pythonosc import dispatcher, osc_server, udp_client
 
-import functools # Use the built-in functools module
-import sys
-import os
-import qrcode
-import io
-from PySide6.QtGui import QPixmap
+from config import save_settings
+from fusion_controller import FusionController
+from i18n import LANGUAGES, get_current_language, language_signals, set_language, translate as _
+from yokonex_client import YokoNexClient
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
+_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
+
+_DEVICE_TYPES = ["toy", "estim"]
+
+
+def _spawn(coro):
+    """Create an asyncio task with an isolated context (Python 3.13 workaround).
+
+    Calling create_task from within an OSC callback or any running-task context
+    can cause 'Cannot enter into task' errors in Python 3.13.  Scheduling via
+    call_soon ensures the task is created from the event-loop's base context.
+    """
+    loop = asyncio.get_event_loop()
+    loop.call_soon(lambda: loop.create_task(coro, context=contextvars.copy_context()))
+
 
 class NetworkConfigTab(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.original_qrcode_pixmap = None  # 保存原始二维码图像
 
-        # 主布局使用QHBoxLayout
-        # 创建主布局（垂直布局）
-        self.main_layout = QVBoxLayout(self)
+        self._yokonex: YokoNexClient | None = None
+        self._osc_transport  = None
+        self._osc_protocol   = None
+        self._osc_dispatcher = dispatcher.Dispatcher()
+        self._panel_handlers: dict = {}
+        self._osc_interaction_handlers: dict = {}
+        self._osc_signal_connected = False
+        self._scan_task: asyncio.Task | None = None
 
-        # 创建内容布局（水平布局，包含配置和二维码）
-        self.content_layout = QHBoxLayout()
+        # (address, name, type) of scanned devices waiting to be connected
+        self._scanned: list[dict] = []
 
-        # 创建左侧配置布局（垂直布局）
-        self.config_layout = QVBoxLayout()
-
-        self.setLayout(self.main_layout)
-
-        # 创建网络配置组
-        self.network_config_group = QGroupBox(str(_("network_tab.title")))
-        self.form_layout = QFormLayout()
-
-        # 网卡选择
-        self.ip_combobox = QComboBox()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.ip_combobox.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        active_ips = get_active_ip_addresses()
-        for interface, ip in active_ips.items():
-            self.ip_combobox.addItem(f"{interface}: {ip}")
-        self.form_layout.addRow(str(_("network_tab.interface")) + ":", self.ip_combobox)
-
-        # 端口选择
-        self.port_spinbox = QSpinBox()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.port_spinbox.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.port_spinbox.setRange(1024, 65535)
-        self.port_spinbox.setValue(self.main_window.settings['port'])  # Set the default or loaded value
-        self.form_layout.addRow(str(_("network_tab.websocket_port")) + ":", self.port_spinbox)
-
-        # OSC端口选择
-        self.osc_port_spinbox = QSpinBox()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.osc_port_spinbox.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.osc_port_spinbox.setRange(1024, 65535)
-        self.osc_port_spinbox.setValue(self.main_window.settings['osc_port'])  # Set the default or loaded value
-        self.form_layout.addRow(str(_("network_tab.osc_port")) + ":", self.osc_port_spinbox)
-
-        # 创建远程地址控制布局
-        self.remote_address_layout = QHBoxLayout()
-        
-        # 创建开启异地复选框
-        self.enable_remote_checkbox = QCheckBox(str(_("network_tab.enable_remote")))
-        self.enable_remote_checkbox.setChecked(self.main_window.settings.get('enable_remote', False))
-        self.enable_remote_checkbox.stateChanged.connect(self.on_remote_enabled_changed)
-        
-        # 远程地址输入框
-        self.remote_address_edit = QLineEdit()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.remote_address_edit.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.remote_address_edit.setText(self.main_window.settings.get('remote_address', ''))
-        self.remote_address_edit.setEnabled(self.enable_remote_checkbox.isChecked())
-        self.remote_address_edit.textChanged.connect(self.on_remote_address_changed)
-        # 添加提示文本
-        self.remote_address_edit.setPlaceholderText(_("network_tab.please_enter_valid_ip"))
-        
-        # 获取公网地址按钮
-        self.get_public_ip_button = QPushButton(str(_("network_tab.get_public_ip")))
-        self.get_public_ip_button.clicked.connect(self.get_public_ip)
-        self.get_public_ip_button.setEnabled(self.enable_remote_checkbox.isChecked())
-        
-        # 将控件添加到布局
-        self.remote_address_layout.addWidget(self.enable_remote_checkbox)
-        self.remote_address_layout.addWidget(self.remote_address_edit)
-        self.remote_address_layout.addWidget(self.get_public_ip_button)
-        
-        self.form_layout.addRow(str(_("network_tab.remote_address")) + ":", self.remote_address_layout)
-
-        # 创建 dispatcher 和地址处理器字典
-        self.dispatcher = dispatcher.Dispatcher()
-        self.osc_address_handlers = {}  # 自定义 OSC 地址的处理器
-        self.panel_control_handlers = {}  # 面板控制 OSC 地址的处理器
-
-        # 添加客户端连接状态标签
-        self.connection_status_label = QLabel(str(_("network_tab.offline")))
-        self.connection_status_label.setAlignment(Qt.AlignCenter)  # 设置内容居中
-        self.connection_status_label.setStyleSheet("""
-            QLabel {
-                background-color: red;
-                color: white;
-                border-radius: 5px;  /* 圆角 */
-                padding: 5px;
-            }
-        """)
-        self.connection_status_label.adjustSize()  # 调整大小以适应内容
-        self.form_layout.addRow(str(_("network_tab.status")) + ":", self.connection_status_label)
-
-        # 启动按钮
-        self.start_button = QPushButton(str(_("network_tab.connect")))
-        self.start_button.setStyleSheet("background-color: green; color: white;")  # 设置按钮初始为绿色
-        self.start_button.clicked.connect(self.start_server_button_clicked)
-        self.form_layout.addRow(self.start_button)
-
-        self.network_config_group.setLayout(self.form_layout)
-
-        # 将网络配置组添加到左侧配置布局, 设置stretch=0
-        self.config_layout.addWidget(self.network_config_group, 0)
-
-        # 创建语言设置区域
-        self.language_layout = QHBoxLayout()
-        self.language_label = QLabel(str(_("main.settings.language")) + ":")
-        self.language_combo = QComboBox()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.language_combo.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        for lang_code, lang_name in LANGUAGES.items():
-            self.language_combo.addItem(lang_name, lang_code)
-
-        # 设置当前语言
-        current_language = self.main_window.settings.get('language') or get_current_language()
-        for i in range(self.language_combo.count()):
-            if self.language_combo.itemData(i) == current_language:
-                self.language_combo.setCurrentIndex(i)
-                break
-
-        # 连接语言选择变更信号，直接生效
-        self.language_combo.currentTextChanged.connect(self.on_language_changed)
-
-        self.language_layout.addWidget(self.language_label)
-        self.language_layout.addWidget(self.language_combo)
-        self.language_layout.addStretch()  # 添加弹性空间
-
-        # 将语言设置添加到配置布局
-        self.config_layout.addLayout(self.language_layout)
-
-        # 将配置布局添加到内容布局
-        self.content_layout.addLayout(self.config_layout)
-        
-
-        # 二维码显示（右侧伸缩部分）
-        self.qrcode_label = QLabel(self)
-        self.content_layout.addWidget(self.qrcode_label)
-
-        # 将内容布局添加到主布局
-        self.main_layout.addLayout(self.content_layout)
-        self.qrcode_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.qrcode_label.setAlignment(Qt.AlignCenter)  # 居中显示
-        self.content_layout.addWidget(self.qrcode_label, 1)  # stretch=1占据剩余空间
-
-        # 二维码标签的尺寸策略强化
-        self.qrcode_label.setSizePolicy(
-            QSizePolicy.Expanding,  # 水平策略：尽可能扩展
-            QSizePolicy.Expanding  # 垂直策略
-        )
-        self.qrcode_label.setMinimumSize(300, 300)  # 设置最小可显示尺寸
-
-        # Apply loaded settings to the UI components
-        self.apply_settings_to_ui()
-
-        # Save settings whenever network configuration is changed
-        self.ip_combobox.currentTextChanged.connect(self.save_network_settings)
-        self.port_spinbox.valueChanged.connect(self.save_network_settings)
-        self.osc_port_spinbox.valueChanged.connect(self.save_network_settings)
-        self.remote_address_edit.textChanged.connect(self.save_network_settings) # 新增远程地址保存
-
-        # 监听语言变更信号以更新UI
+        self._build_ui()
         language_signals.language_changed.connect(self.update_ui_texts)
 
-    def apply_settings_to_ui(self):
-        """Apply the loaded settings to the UI elements."""
-        # Find the correct index for the loaded interface and IP
-        for i in range(self.ip_combobox.count()):
-            interface_ip = self.ip_combobox.itemText(i).split(": ")
-            if len(interface_ip) == 2:
-                interface, ip = interface_ip
-                if interface == self.main_window.settings['interface'] and ip == self.main_window.settings['ip']:
-                    self.ip_combobox.setCurrentIndex(i)
-                    logger.info("set to previous used network interface")
+    # ── UI ─────────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        self.setLayout(root)
+
+        # ── Server group ──────────────────────────────────────────────────────
+        self.server_group = QGroupBox(str(_("network_tab.server_group")))
+        srv_form = QFormLayout()
+
+        self.host_edit = QLineEdit()
+        self.host_edit.setLocale(_EN)
+        self.host_edit.setText(self.main_window.settings.get("yokonex_host", "127.0.0.1"))
+        srv_form.addRow(str(_("network_tab.yokonex_host")) + ":", self.host_edit)
+
+        self.yokonex_port_spin = QSpinBox()
+        self.yokonex_port_spin.setLocale(_EN)
+        self.yokonex_port_spin.setRange(1024, 65535)
+        self.yokonex_port_spin.setValue(self.main_window.settings.get("yokonex_port", 8765))
+        srv_form.addRow(str(_("network_tab.yokonex_port")) + ":", self.yokonex_port_spin)
+
+        self.relay_check = QCheckBox(str(_("network_tab.relay_mode")))
+        self.relay_check.setChecked(self.main_window.settings.get("relay_mode", False))
+        srv_form.addRow(self.relay_check)
+
+        self.relay_token_edit = QLineEdit()
+        self.relay_token_edit.setLocale(_EN)
+        self.relay_token_edit.setPlaceholderText("CLIENT_TOKEN")
+        self.relay_token_edit.setText(self.main_window.settings.get("relay_token", ""))
+        self.relay_token_label = QLabel(str(_("network_tab.relay_token")) + ":")
+        srv_form.addRow(self.relay_token_label, self.relay_token_edit)
+
+        relay_agent_row = QHBoxLayout()
+        self.relay_agent_edit = QLineEdit()
+        self.relay_agent_edit.setLocale(_EN)
+        self.relay_agent_edit.setPlaceholderText("home-pc")
+        self.relay_agent_edit.setText(self.main_window.settings.get("relay_agent_id", ""))
+        self.relay_agent_label = QLabel(str(_("network_tab.relay_agent")) + ":")
+        self.relay_list_btn = QPushButton(str(_("network_tab.relay_list_agents")))
+        relay_agent_row.addWidget(self.relay_agent_edit)
+        relay_agent_row.addWidget(self.relay_list_btn)
+        srv_form.addRow(self.relay_agent_label, relay_agent_row)
+
+        self._set_relay_fields_visible(self.relay_check.isChecked())
+
+        self.osc_port_spin = QSpinBox()
+        self.osc_port_spin.setLocale(_EN)
+        self.osc_port_spin.setRange(1024, 65535)
+        self.osc_port_spin.setValue(self.main_window.settings.get("osc_port", 9001))
+        srv_form.addRow(str(_("network_tab.osc_port")) + ":", self.osc_port_spin)
+
+        self.connect_btn = QPushButton(str(_("network_tab.connect")))
+        self.connect_btn.setStyleSheet("background-color: green; color: white;")
+        srv_form.addRow(self.connect_btn)
+
+        self.yokonex_status_label = QLabel(str(_("network_tab.disconnected")))
+        self.yokonex_status_label.setAlignment(Qt.AlignCenter)
+        srv_form.addRow(str(_("network_tab.status")) + ":", self.yokonex_status_label)
+        self._set_label_style(self.yokonex_status_label, "red")
+
+        self.server_group.setLayout(srv_form)
+        root.addWidget(self.server_group)
+
+        # ── Device group ──────────────────────────────────────────────────────
+        self.device_group = QGroupBox(str(_("network_tab.device_group")))
+        self.device_group.setEnabled(False)
+        dev_layout = QVBoxLayout()
+
+        # Scan row
+        scan_row = QHBoxLayout()
+        self.scan_btn = QPushButton(str(_("network_tab.scan")))
+        self.scan_combo = QComboBox()
+        self.scan_combo.setLocale(_EN)
+        self.scan_combo.setPlaceholderText(str(_("network_tab.no_devices")))
+        self.scan_combo.setMinimumWidth(200)
+        scan_row.addWidget(self.scan_btn)
+        scan_row.addWidget(self.scan_combo, 1)
+        dev_layout.addLayout(scan_row)
+
+        # Device type + add row
+        add_row = QHBoxLayout()
+        self.dtype_combo = QComboBox()
+        self.dtype_combo.setLocale(_EN)
+        for t in _DEVICE_TYPES:
+            self.dtype_combo.addItem(t)
+        self.add_device_btn = QPushButton(str(_("network_tab.connect_device_btn")))
+        self.add_device_btn.setStyleSheet("background-color: #2d862d; color: white;")
+        add_row.addWidget(QLabel(str(_("network_tab.type_label"))))
+        add_row.addWidget(self.dtype_combo)
+        add_row.addWidget(self.add_device_btn)
+        add_row.addStretch()
+        dev_layout.addLayout(add_row)
+
+        # Connected devices list
+        dev_layout.addWidget(QLabel(str(_("network_tab.connected_devices"))))
+        self.device_list = QListWidget()
+        self.device_list.setMinimumHeight(90)
+        dev_layout.addWidget(self.device_list)
+
+        remove_row = QHBoxLayout()
+        self.remove_device_btn = QPushButton(str(_("network_tab.disconnect_selected")))
+        self.remove_device_btn.setEnabled(False)
+        remove_row.addWidget(self.remove_device_btn)
+        remove_row.addStretch()
+        dev_layout.addLayout(remove_row)
+
+        self.device_group.setLayout(dev_layout)
+        root.addWidget(self.device_group)
+
+        # ── Language ──────────────────────────────────────────────────────────
+        lang_row = QHBoxLayout()
+        self.lang_label = QLabel(str(_("main.settings.language")) + ":")
+        self.lang_combo = QComboBox()
+        self.lang_combo.setLocale(_EN)
+        for code, name in LANGUAGES.items():
+            self.lang_combo.addItem(name, code)
+        current = self.main_window.settings.get("language") or get_current_language()
+        for i in range(self.lang_combo.count()):
+            if self.lang_combo.itemData(i) == current:
+                self.lang_combo.setCurrentIndex(i)
+                break
+        lang_row.addWidget(self.lang_label)
+        lang_row.addWidget(self.lang_combo)
+        lang_row.addStretch()
+        root.addLayout(lang_row)
+        root.addStretch()
+
+        # Signals
+        self.connect_btn.clicked.connect(self._on_connect_clicked)
+        self.scan_btn.clicked.connect(self._on_scan_clicked)
+        self.add_device_btn.clicked.connect(self._on_add_device_clicked)
+        self.remove_device_btn.clicked.connect(self._on_remove_device_clicked)
+        self.device_list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.device_list.currentItemChanged.connect(self._on_selection_changed)
+        self.relay_check.stateChanged.connect(self._on_relay_toggled)
+        self.relay_list_btn.clicked.connect(self._on_list_agents_clicked)
+        self.lang_combo.currentTextChanged.connect(self._on_language_changed)
+        self.host_edit.textChanged.connect(self._save_settings)
+        self.yokonex_port_spin.valueChanged.connect(self._save_settings)
+        self.osc_port_spin.valueChanged.connect(self._save_settings)
+        self.relay_token_edit.textChanged.connect(self._save_settings)
+        self.relay_agent_edit.textChanged.connect(self._save_settings)
+
+    # ── Button handlers ────────────────────────────────────────────────────────
+
+    def _on_connect_clicked(self):
+        _spawn(self._connect_to_yokonex())
+
+    def _on_scan_clicked(self):
+        if self._scan_task and not self._scan_task.done():
+            return
+        _spawn(self._do_scan())
+
+    def _on_add_device_clicked(self):
+        _spawn(self._add_device())
+
+    def _on_remove_device_clicked(self):
+        _spawn(self._remove_device())
+
+    def _on_selection_changed(self, *_args):
+        has = (len(self.device_list.selectedItems()) > 0
+               or self.device_list.currentItem() is not None)
+        self.remove_device_btn.setEnabled(has)
+
+    def _on_relay_toggled(self, state: int):
+        self._set_relay_fields_visible(bool(state))
+        self._save_settings()
+
+    def _on_list_agents_clicked(self):
+        _spawn(self._list_and_pick_agent())
+
+    # ── Async operations ───────────────────────────────────────────────────────
+
+    async def _connect_to_yokonex(self):
+        host = self.host_edit.text().strip() or "127.0.0.1"
+        port = self.yokonex_port_spin.value()
+        url  = f"ws://{host}:{port}"
+
+        self.connect_btn.setEnabled(False)
+        self.connect_btn.setText(str(_("network_tab.connecting")))
+
+        relay_mode = self.relay_check.isChecked()
+        client = YokoNexClient(url)
+
+        if relay_mode:
+            token    = self.relay_token_edit.text().strip()
+            agent_id = self.relay_agent_edit.text().strip()
+            if not token or not agent_id:
+                QMessageBox.warning(self, "Error",
+                                    "Cloud relay mode requires both Token and Agent ID.")
+                self.connect_btn.setEnabled(True)
+                self.connect_btn.setText(str(_("network_tab.connect")))
+                return
+            ok = await client.connect_relay(token, agent_id)
+        else:
+            ok = await client.connect()
+
+        if not ok:
+            self.connect_btn.setEnabled(True)
+            self.connect_btn.setText(str(_("network_tab.connect")))
+            self._set_yokonex_status(False)
+            QMessageBox.warning(self, "Error",
+                                f"Cannot connect to {'relay' if relay_mode else 'YokoNex'} at {url}")
+            return
+
+        self._yokonex = client
+        self._yokonex.add_event_handler(self._on_yokonex_event)
+        self._set_yokonex_status(True)
+        self.connect_btn.setText(str(_("network_tab.connected")))
+
+        # Create FusionController
+        osc_out    = udp_client.SimpleUDPClient("127.0.0.1", 9000)
+        controller = FusionController(client, osc_out, self.main_window)
+        self.main_window.controller = controller
+
+        # Bind panel editor
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.bind_controller(controller)
+
+        # Bind controller settings tab (for device callbacks)
+        if hasattr(self.main_window, "controller_settings_tab"):
+            self.main_window.controller_settings_tab.bind_controller(controller)
+
+        # Bind ChatBox tab
+        if hasattr(self.main_window, "chatbox_tab"):
+            self.main_window.chatbox_tab.bind_controller(controller)
+
+        # Start OSC server
+        await self._start_osc_server()
+        self._register_panel_osc(controller)
+
+        self.device_group.setEnabled(True)
+
+        if not self._osc_signal_connected:
+            if hasattr(self.main_window, "osc_parameters_tab"):
+                self.main_window.osc_parameters_tab.addresses_updated.connect(
+                    lambda: self._update_osc_interaction(controller)
+                )
+            self._osc_signal_connected = True
+        self._update_osc_interaction(controller)
+
+        # Populate scan combo with devices already connected to the WS server
+        await self._load_connected_devices()
+
+    async def _list_and_pick_agent(self):
+        host  = self.host_edit.text().strip() or "127.0.0.1"
+        port  = self.yokonex_port_spin.value()
+        token = self.relay_token_edit.text().strip()
+        url   = f"ws://{host}:{port}"
+
+        if not token:
+            QMessageBox.warning(self, "Error", "Enter the Token first.")
+            return
+
+        self.relay_list_btn.setEnabled(False)
+        try:
+            import websockets as _ws
+            import json as _json
+            async with _ws.connect(url, open_timeout=5) as ws:
+                await ws.send(_json.dumps({"type": "client_hello", "token": token}))
+                hello = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                if not hello.get("ok"):
+                    QMessageBox.warning(self, "Error", f"Auth failed: {hello.get('message')}")
+                    return
+                await ws.send(_json.dumps({"id": 1, "type": "list_agents"}))
+                resp = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+                agents = resp.get("agents", [])
+
+            if not agents:
+                QMessageBox.information(self, "Agents", "No agents online.")
+                return
+
+            from PySide6.QtWidgets import QInputDialog
+            items = [f"{a['id']}  ({a['clients']} client(s))" for a in agents]
+            item, ok = QInputDialog.getItem(self, "Select Agent", "Agent:", items, 0, False)
+            if ok and item:
+                self.relay_agent_edit.setText(agents[items.index(item)]["id"])
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed: {e}")
+        finally:
+            self.relay_list_btn.setEnabled(True)
+
+    async def _load_connected_devices(self):
+        """Fetch devices already connected on the WS server and populate the scan combo."""
+        if not self._yokonex:
+            return
+        try:
+            devices = await self._yokonex.list_devices()
+        except Exception as e:
+            log.warning("list_devices failed: %s", e)
+            return
+        if not devices:
+            return
+        self._scanned = devices
+        self.scan_combo.clear()
+        for d in devices:
+            label = f"{d.get('name', 'Unknown')} ({d['address']})"
+            idx = self.scan_combo.count()
+            self.scan_combo.addItem(label, d["address"])
+            # Mark as already-connected + store type hint
+            dtype = d.get("type") or d.get("device_type", "")
+            self.scan_combo.setItemData(idx, {"connected": True, "type": dtype}, Qt.UserRole + 1)
+        if self.scan_combo.count() > 0:
+            # Pre-select dtype from first device if known
+            first_extra = self.scan_combo.itemData(0, Qt.UserRole + 1) or {}
+            dtype = first_extra.get("type", "")
+            if dtype in _DEVICE_TYPES:
+                self.dtype_combo.setCurrentText(dtype)
+        log.info("Loaded %d existing device(s) from server", len(devices))
+
+    async def _do_scan(self):
+        self.scan_btn.setEnabled(False)
+        self.scan_btn.setText(str(_("network_tab.scanning")))
+        try:
+            devices = await self._yokonex.scan(duration=5.0)
+            self._scanned = devices
+            self.scan_combo.clear()
+            for d in devices:
+                label = f"{d.get('name', 'Unknown')} ({d['address']})"
+                idx = self.scan_combo.count()
+                self.scan_combo.addItem(label, d["address"])
+                self.scan_combo.setItemData(idx, {"connected": False, "type": ""}, Qt.UserRole + 1)
+            if not devices:
+                QMessageBox.information(self, "Scan", str(_("network_tab.no_devices_found")))
+        except Exception as e:
+            log.error("Scan error: %s", e)
+        finally:
+            self.scan_btn.setEnabled(True)
+            self.scan_btn.setText(str(_("network_tab.scan")))
+
+    async def _add_device(self):
+        idx = self.scan_combo.currentIndex()
+        if idx < 0:
+            QMessageBox.warning(self, "Error", "Scan for devices first.")
+            return
+        address = self.scan_combo.currentData(Qt.UserRole)
+        name    = self.scan_combo.currentText().split(" (")[0]
+        dtype   = self.dtype_combo.currentText()
+        extra   = self.scan_combo.itemData(idx, Qt.UserRole + 1) or {}
+        already_connected = extra.get("connected", False)
+        # Use server-provided type if available and user hasn't explicitly overridden
+        if extra.get("type") in _DEVICE_TYPES:
+            dtype = extra["type"]
+
+        # Prevent duplicate entries
+        ctrl = self.main_window.controller
+        if ctrl and address in ctrl.devices:
+            QMessageBox.information(self, str(_("network_tab.already_added_title")),
+                                    str(_("network_tab.already_added_msg")).format(name=name))
+            return
+
+        self.add_device_btn.setEnabled(False)
+        try:
+            if not already_connected:
+                result = await self._yokonex.connect_device(address, name, dtype)
+                if not result.get("ok"):
+                    QMessageBox.warning(self, str(_("network_tab.error_title")),
+                                        str(_("network_tab.connect_failed")).format(
+                                            error=result.get("error", "")))
+                    self.add_device_btn.setEnabled(True)
+                    return
+        except Exception as e:
+            log.error("connect_device error: %s", e)
+            self.add_device_btn.setEnabled(True)
+            return
+
+        # Register with controller
+        if ctrl:
+            ctrl.register_device(address, name, dtype)
+
+        # Notify OSC parameters tab of updated device list
+        if hasattr(self.main_window, "osc_parameters_tab") and ctrl:
+            self.main_window.osc_parameters_tab.set_devices(ctrl.devices)
+
+        # Refresh panel editor device selector
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.refresh_preset_devices()
+
+        # Add to list widget
+        item = QListWidgetItem(f"● {name}  ({address})  [{dtype}]")
+        item.setData(Qt.UserRole, address)
+        self.device_list.addItem(item)
+
+        # Refresh panel editor button labels (devices changed)
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.refresh()
+
+        log.info("Connected device %s (%s) type=%s", name, address, dtype)
+        self.add_device_btn.setEnabled(True)
+
+    async def _remove_device(self):
+        selected = self.device_list.selectedItems()
+        if not selected:
+            return
+        item = selected[0]
+        address = item.data(Qt.UserRole)
+
+        try:
+            await self._yokonex.disconnect_device(address)
+        except Exception as e:
+            log.error("disconnect_device error: %s", e)
+
+        ctrl = self.main_window.controller
+        if ctrl:
+            ctrl.unregister_device(address)
+
+        self.device_list.takeItem(self.device_list.row(item))
+        # Let _on_selection_changed handle button state based on remaining items
+
+        # Notify OSC parameters tab
+        if hasattr(self.main_window, "osc_parameters_tab") and ctrl:
+            self.main_window.osc_parameters_tab.set_devices(ctrl.devices)
+
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.refresh()
+            self.main_window.panel_editor_tab.refresh_preset_devices()
+
+    async def _start_osc_server(self):
+        if self._osc_transport is not None:
+            return
+        osc_port = self.osc_port_spin.value()
+        try:
+            srv = osc_server.AsyncIOOSCUDPServer(
+                ("0.0.0.0", osc_port), self._osc_dispatcher, asyncio.get_event_loop()
+            )
+            self._osc_transport, self._osc_protocol = await srv.create_serve_endpoint()
+            log.info("OSC server listening on port %d", osc_port)
+        except Exception as e:
+            log.error("Failed to start OSC server: %s", e)
+
+    def _register_panel_osc(self, controller):
+        if self._panel_handlers:
+            return
+        for addr in (
+            "/avatar/parameters/SoundPad/Button/*",
+            "/avatar/parameters/SoundPad/Page",
+        ):
+            handler = functools.partial(self._osc_panel_task, controller=controller)
+            self._osc_dispatcher.map(addr, handler)
+            self._panel_handlers[addr] = handler
+
+    def _update_osc_interaction(self, controller):
+        """Rebuild OSC interaction address → handler mappings."""
+        # Unmap previous interaction handlers
+        for addr, handler in list(self._osc_interaction_handlers.items()):
+            self._osc_dispatcher.unmap(addr, handler)
+        self._osc_interaction_handlers.clear()
+
+        if not hasattr(self.main_window, "osc_parameters_tab"):
+            return
+        for entry in self.main_window.osc_parameters_tab.get_addresses():
+            addr = entry.get("address", "")
+            if not addr:
+                continue
+            handler = functools.partial(
+                self._osc_interaction_task, controller=controller, entry=entry
+            )
+            self._osc_dispatcher.map(addr, handler)
+            self._osc_interaction_handlers[addr] = handler
+        log.info("OSC interaction mappings updated (%d entries)",
+                 len(self._osc_interaction_handlers))
+
+    def _osc_panel_task(self, address, *args, controller):
+        _spawn(controller.handle_osc_panel(address, *args))
+
+    def _osc_interaction_task(self, address, *args, controller, entry):
+        if not args:
+            return
+        value = float(args[0])
+        _spawn(controller.handle_osc_interaction(address, value, entry))
+
+    # ── YokoNex event handler ──────────────────────────────────────────────────
+
+    async def _on_yokonex_event(self, data: dict):
+        event   = data.get("event")
+        payload = data.get("data", {})
+        addr    = payload.get("address", "")
+
+        # Route device state events to fusion controller + controller settings tab
+        if event in ("channel_status", "battery", "motor_status") and addr:
+            ctrl = self.main_window.controller
+            if ctrl:
+                ctrl.update_device_state(addr, event, payload)
+            if hasattr(self.main_window, "controller_settings_tab"):
+                self.main_window.controller_settings_tab.on_device_event(addr, data)
+
+        if event == "battery":
+            pct = payload.get("battery") or payload.get("level", "?")
+            log.info("Battery %s: %s%%", addr, pct)
+        elif event == "disconnected":
+            log.warning("Device disconnected: %s", addr)
+            ctrl = self.main_window.controller
+            if ctrl:
+                ctrl.unregister_device(addr)
+                if hasattr(self.main_window, "osc_parameters_tab"):
+                    self.main_window.osc_parameters_tab.set_devices(ctrl.devices)
+            for i in range(self.device_list.count()):
+                item = self.device_list.item(i)
+                if item and item.data(Qt.UserRole) == addr:
+                    self.device_list.takeItem(i)
                     break
 
-    def save_network_settings(self):
-        """Save network settings to the settings.yml file."""
-        selected_interface_ip = self.ip_combobox.currentText().split(": ")
-        if len(selected_interface_ip) == 2:
-            selected_interface, selected_ip = selected_interface_ip
-            selected_port = self.port_spinbox.value()
-            osc_port = self.osc_port_spinbox.value()
-            remote_address = self.remote_address_edit.text()
-            
-            # 验证远程地址格式
-            if remote_address and not self.validate_ip_address(remote_address):
-                logger.warning(f"无效的远程IP地址格式: {remote_address}")
-                return
-                
-            enable_remote = self.enable_remote_checkbox.isChecked()
-            self.main_window.settings['interface'] = selected_interface
-            self.main_window.settings['ip'] = selected_ip
-            self.main_window.settings['port'] = selected_port
-            self.main_window.settings['osc_port'] = osc_port
-            self.main_window.settings['remote_address'] = remote_address
-            self.main_window.settings['enable_remote'] = enable_remote
+    # ── Status helpers ─────────────────────────────────────────────────────────
 
-            save_settings(self.main_window.settings)
-            logger.info("Network settings saved.")
-
-    def on_language_changed(self):
-        """处理语言选择变更，直接生效"""
-        selected_language = self.language_combo.currentData()
-        if selected_language:
-            # 更新设置
-            self.main_window.settings['language'] = selected_language
-
-            # 保存设置到文件
-            save_settings(self.main_window.settings)
-
-            # 设置当前语言 - 这将触发语言变更信号
-            set_language(selected_language)
-
-            logger.info(f"Language changed to {LANGUAGES.get(selected_language, selected_language)} ({selected_language})")
-
-    def start_server_button_clicked(self):
-        """启动按钮被点击后的处理逻辑"""
-        self.start_button.setText(str(_("network_tab.disconnect")))  # 修改按钮文本
-        self.start_button.setStyleSheet("background-color: grey; color: white;")  # 将按钮置灰
-        self.start_button.setEnabled(False)  # 禁用按钮
-        self.start_server()  # 调用现有的启动服务器逻辑
-
-    def start_server(self):
-        """启动 WebSocket 服务器"""
-        # 验证远程地址（如果启用）
-        if self.enable_remote_checkbox.isChecked():
-            remote_address = self.remote_address_edit.text()
-            if remote_address and not self.validate_ip_address(remote_address):
-                error_msg = "远程地址格式无效，无法启动服务器"
-                logger.error(error_msg)
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.warning(self, "错误", error_msg)
-                return
-    
-        selected_ip = self.ip_combobox.currentText().split(": ")[-1]
-        selected_port = self.port_spinbox.value()
-        osc_port = self.osc_port_spinbox.value()
-        logger.info(
-            f"正在启动 WebSocket 服务器，监听地址: {selected_ip}:{selected_port} 和 OSC 数据接收端口: {osc_port}")
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.run_server(selected_ip, selected_port, osc_port))
-            logger.info('WebSocket 服务器已启动')
-            # After starting the server, connect the addresses_updated signal
-            self.main_window.osc_parameters_tab.addresses_updated.connect(self.update_osc_mappings)
-            # 启动成功后，将按钮设为灰色并禁用
-            self.start_button.setText("已启动")
-            self.start_button.setStyleSheet("background-color: grey; color: white;")
-            self.start_button.setEnabled(False)
-        except OSError as e:
-            error_message = f"启动服务器失败: {str(e)}"
-            # Log the error with error level
-            logger.error(error_message)
-            # Update the UI to reflect the error
-            self.start_button.setText("启动失败,请重试")
-            self.start_button.setStyleSheet("background-color: red; color: white;")
-            self.start_button.setEnabled(True)
-            # 记录异常日志
-            logger.error(f"服务器启动过程中发生异常: {str(e)}")
-
-    async def run_server(self, ip: str, port: int, osc_port: int):
-        """运行服务器并启动OSC服务器"""
-        try:
-            async with DGLabWSServer(ip, port, 60) as server:
-                client = server.new_local_client()
-                logger.info("WebSocket 客户端已初始化")
-
-                # Generate QR code
-                remote_address = self.remote_address_edit.text()
-                if remote_address:
-                    url = client.get_qrcode(f"ws://{remote_address}:{port}")
-                    logger.info(f"使用远程地址生成二维码: ws://{remote_address}:{port}")
-                else:
-                    url = client.get_qrcode(f"ws://{ip}:{port}")
-                    logger.info(f"使用本地地址生成二维码: ws://{ip}:{port}")
-                
-                qrcode_image = self.generate_qrcode(url)
-                self.update_qrcode(qrcode_image)
-
-                osc_client = udp_client.SimpleUDPClient("127.0.0.1", 9000)
-                # Initialize controller
-                controller = DGLabController(client, osc_client, self.main_window)
-                self.main_window.controller = controller
-                logger.info("DGLabController 已初始化")
-                # After controller initialization, bind settings
-                self.main_window.controller_settings_tab.bind_controller_settings()
-                # 确保UI状态与控制器状态同步
-                self.main_window.controller_settings_tab.sync_from_controller()
-
-                # 设置 OSC 服务器
-                osc_server_instance = osc_server.AsyncIOOSCUDPServer(
-                    ("0.0.0.0", osc_port), self.dispatcher, asyncio.get_event_loop()
-                )
-                osc_transport, osc_protocol = await osc_server_instance.create_serve_endpoint()
-                logger.info(f"OSC Server Listening on port {osc_port}")
-
-                # 连接 addresses_updated 信号到 update_osc_mappings 方法
-                self.main_window.osc_parameters_tab.addresses_updated.connect(self.update_osc_mappings)
-                # 初始化 OSC 映射，包括面板控制和自定义地址
-                self.update_osc_mappings(controller)
-
-                # Start the data processing loop
-                async for data in client.data_generator():
-                    if isinstance(data, StrengthData):
-                        logger.info(f"接收到数据包 - A通道: {data.a}, B通道: {data.b}")
-                        controller.last_strength = data
-                        controller.data_updated_event.set()  # 数据更新，触发开火操作的后续事件
-                        controller.app_status_online = True
-                        self.main_window.app_status_online = True
-                        self.update_connection_status(controller.app_status_online)
-                        # Update UI components related to strength data
-                        self.main_window.controller_settings_tab.update_channel_strength_labels(data)
-                    elif isinstance(data, FeedbackButton):
-                        logger.info(f"App 触发了反馈按钮：{data.name}")
-                    elif data == RetCode.CLIENT_DISCONNECTED:
-                        logger.info("App 已断开连接，你可以尝试重新扫码进行连接绑定")
-                        controller.app_status_online = False
-                        self.main_window.app_status_online = False
-                        self.update_connection_status(controller.app_status_online)
-                        await client.rebind()
-                        logger.info("重新绑定成功")
-                        controller.app_status_online = True
-                        self.update_connection_status(controller.app_status_online)
-                        # 重连成功后重置波形更新时间，强制下一次循环重新发送波形
-                        controller.pulse_last_update_time = {} 
-                        # 同步UI状态到控制器
-                        self.main_window.controller_settings_tab.sync_from_controller()
-                    else:
-                        logger.info(f"获取到状态码：{RetCode}")
-
-                osc_transport.close()
-        except OSError as e:
-            # Handle specific errors and log them
-            error_message = f"WebSocket 服务器启动失败: {str(e)}"
-            logger.error(error_message)
-
-            # 启动过程中发生异常，恢复按钮状态为可点击的红色
-            self.start_button.setText("启动失败，请重试")
-            self.start_button.setStyleSheet("background-color: red; color: white;")
-            self.start_button.setEnabled(True)
-            self.main_window.log_viewer_tab.log_text_edit.append(f"ERROR: {error_message}")
-
-
-
-    def generate_qrcode(self, data: str):
-        """生成二维码并转换为PySide6可显示的QPixmap"""
-        qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=16, border=2)
-        qr.add_data(data)
-        qr.make(fit=True)
-        img = qr.make_image(fill='black', back_color='white')
-
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        buffer.seek(0)
-
-        qimage = QPixmap()
-        qimage.loadFromData(buffer.read(), 'PNG')
-
-        return qimage
-
-    def update_qrcode(self, qrcode_pixmap):
-        """更新二维码并保存原始图像"""
-        self.original_qrcode_pixmap = qrcode_pixmap
-        self.scale_qrcode()
-        logger.info("二维码已更新")
-
-    def scale_qrcode(self):
-        """根据当前标签尺寸缩放二维码"""
-        if self.original_qrcode_pixmap and not self.original_qrcode_pixmap.isNull():
-            scaled_pixmap = self.original_qrcode_pixmap.scaled(
-                self.qrcode_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            self.qrcode_label.setPixmap(scaled_pixmap)
-
-
-    def resizeEvent(self, event):
-        """优化窗口缩放处理"""
-        # 先执行父类的resize事件处理
-        super().resizeEvent(event)
-        # 延迟执行二维码缩放以保证尺寸计算准确
-        QTimer.singleShot(0, self.scale_qrcode)
-
-    def update_connection_status(self, is_online):
-        """根据设备连接状态更新标签的文本和颜色"""
-        self.main_window.app_status_online = is_online
-        if is_online:
-            self.connection_status_label.setText(str(_("network_tab.online")))
-            self.connection_status_label.setStyleSheet("""
-                QLabel {
-                    background-color: green;
-                    color: white;
-                    border-radius: 5px;  /* 圆角 */
-                    padding: 5px;
-                }
-            """)
-            # 启用 DGLabController 设置
-            self.main_window.controller_settings_tab.controller_group.setEnabled(True)  # 启用控制器设置
-            self.main_window.controller_settings_tab.command_types_group.setEnabled(True)  # 启用命令类型控制
-            self.main_window.ton_damage_system_tab.damage_group.setEnabled(True)
-            # 确保UI状态与控制器状态同步
-            self.main_window.controller_settings_tab.sync_from_controller()
+    def _set_yokonex_status(self, online: bool):
+        if online:
+            self.yokonex_status_label.setText(str(_("network_tab.connected")))
+            self._set_label_style(self.yokonex_status_label, "green")
         else:
-            self.connection_status_label.setText(str(_("network_tab.offline")))
-            self.connection_status_label.setStyleSheet("""
-                QLabel {
-                    background-color: red;
-                    color: white;
-                    border-radius: 5px;  /* 圆角 */
-                    padding: 5px;
-                }
-            """)
-            # 禁用 DGLabController 设置
-            self.main_window.controller_settings_tab.controller_group.setEnabled(False)  # 禁用控制器设置
-            self.main_window.controller_settings_tab.command_types_group.setEnabled(False)  # 禁用命令类型控制
-            self.main_window.ton_damage_system_tab.damage_group.setEnabled(False)
-        self.connection_status_label.adjustSize()  # 根据内容调整标签大小
+            self.yokonex_status_label.setText(str(_("network_tab.disconnected")))
+            self._set_label_style(self.yokonex_status_label, "red")
 
-    def update_osc_mappings(self, controller=None):
-        if controller is None:
-            controller = self.main_window.controller
-        asyncio.run_coroutine_threadsafe(self._update_osc_mappings(controller), asyncio.get_event_loop())
+    @staticmethod
+    def _set_label_style(label, color):
+        label.setStyleSheet(
+            f"QLabel {{ background-color: {color}; color: white; "
+            f"border-radius: 5px; padding: 5px; }}"
+        )
+        label.adjustSize()
 
-    async def _update_osc_mappings(self, controller):
-        # 首先，移除之前的自定义 OSC 地址映射
-        for address, handler in self.osc_address_handlers.items():
-            self.dispatcher.unmap(address, handler)
-        self.osc_address_handlers.clear()
+    def _save_settings(self):
+        self.main_window.settings["yokonex_host"]   = self.host_edit.text().strip()
+        self.main_window.settings["yokonex_port"]   = self.yokonex_port_spin.value()
+        self.main_window.settings["osc_port"]       = self.osc_port_spin.value()
+        self.main_window.settings["relay_mode"]     = self.relay_check.isChecked()
+        self.main_window.settings["relay_token"]    = self.relay_token_edit.text().strip()
+        self.main_window.settings["relay_agent_id"] = self.relay_agent_edit.text().strip()
+        save_settings(self.main_window.settings)
 
-        # 添加新的自定义 OSC 地址映射
-        osc_addresses = self.main_window.get_osc_addresses()
-        for addr in osc_addresses:
-            address = addr['address']
-            channels = addr['channels']
-            # 确保有映射范围参数
-            mapping_ranges = addr.get('mapping_ranges', {
-                'A': {'min': 0, 'max': 100},
-                'B': {'min': 0, 'max': 100}
-            })
-            handler = functools.partial(self.handle_osc_message_task_pb_with_channels, 
-                                        controller=controller, 
-                                        channels=channels,
-                                        mapping_ranges=mapping_ranges)
-            self.dispatcher.map(address, handler)
-            self.osc_address_handlers[address] = handler
-        logger.info("OSC dispatcher mappings updated with custom addresses.")
+    def _set_relay_fields_visible(self, visible: bool):
+        for w in (self.relay_token_label, self.relay_token_edit,
+                  self.relay_agent_label, self.relay_agent_edit,
+                  self.relay_list_btn):
+            w.setVisible(visible)
 
-        # 确保面板控制的 OSC 地址映射被添加（如果尚未添加）
-        if not self.panel_control_handlers:
-            self.add_panel_control_mappings(controller)
+    def _on_language_changed(self):
+        code = self.lang_combo.currentData()
+        if not code:
+            return
+        self.main_window.settings["language"] = code
+        save_settings(self.main_window.settings)
+        set_language(code)
 
-    def add_panel_control_mappings(self, controller):
-        # 添加面板控制功能的 OSC 地址映射
-        panel_addresses = [
-            "/avatar/parameters/SoundPad/Button/*",
-            "/avatar/parameters/SoundPad/Volume",
-            "/avatar/parameters/SoundPad/Page",
-            "/avatar/parameters/SoundPad/PanelControl"
-        ]
-        for address in panel_addresses:
-            handler = functools.partial(self.handle_osc_message_task_pad, controller=controller)
-            self.dispatcher.map(address, handler)
-            self.panel_control_handlers[address] = handler
-        logger.info("OSC dispatcher mappings updated with panel control addresses.")
-
-    def handle_osc_message_task_pad(self, address, *args, controller):
-        """将OSC命令传递给控制器队列处理机制"""
-        logger.info(f"收到OSC消息 (面板控制): {address} {args}")
-        asyncio.create_task(controller.handle_osc_message_pad(address, *args))
-
-    def handle_osc_message_task_pb_with_channels(self, address, *args, controller, channels, mapping_ranges=None):
-        """将OSC命令传递给控制器队列处理机制，带通道信息和映射范围"""
-        # 确保channels参数格式统一
-        channel_list = []
-        if isinstance(channels, dict):
-            # 将字典格式 {'A': True, 'B': False} 转换为列表格式 ['A']
-            if channels.get('A', False):
-                channel_list.append('A')
-            if channels.get('B', False):
-                channel_list.append('B')
-        elif isinstance(channels, list):
-            # 如果已经是列表格式，直接使用
-            channel_list = channels
-        
-        logger.info(f"收到OSC消息 (参数绑定): {address} {args} 通道: {channel_list}")
-        asyncio.create_task(controller.handle_osc_message_pb(address, *args, channels=channel_list, mapping_ranges=mapping_ranges))
+    # ── i18n ──────────────────────────────────────────────────────────────────
 
     def update_ui_texts(self):
-        """更新所有UI文本为当前语言"""
-        # 更新分组框标题
-        self.network_config_group.setTitle(str(_("network_tab.title")))
+        self.server_group.setTitle(str(_("network_tab.server_group")))
+        self.device_group.setTitle(str(_("network_tab.device_group")))
+        self.connect_btn.setText(
+            str(_("network_tab.connected")) if self._yokonex and self._yokonex.connected
+            else str(_("network_tab.connect"))
+        )
+        self.scan_btn.setText(str(_("network_tab.scan")))
+        self.add_device_btn.setText(str(_("network_tab.connect_device_btn")))
+        self.remove_device_btn.setText(str(_("network_tab.disconnect_selected")))
+        self.lang_label.setText(str(_("main.settings.language")) + ":")
+        self.scan_combo.setPlaceholderText(str(_("network_tab.no_devices")))
 
-        # 更新表单标签 - 使用更可靠的方式来识别标签
-        # 我们知道表单的结构，所以可以直接通过行索引来更新
-        for i in range(self.form_layout.rowCount()):
-            label_item = self.form_layout.itemAt(i, QFormLayout.LabelRole)
-            field_item = self.form_layout.itemAt(i, QFormLayout.FieldRole)
-
-            if label_item and label_item.widget():
-                label_widget = label_item.widget()
-
-                if isinstance(label_widget, QLabel):
-                    # 通过字段类型来识别标签，而不是依赖文本内容
-                    if field_item and field_item.widget():
-                        field_widget = field_item.widget()
-                        if field_widget == self.ip_combobox:
-                            label_widget.setText(str(_("network_tab.interface")) + ":")
-                        elif field_widget == self.port_spinbox:
-                            label_widget.setText(str(_("network_tab.websocket_port")) + ":")
-                        elif field_widget == self.osc_port_spinbox:
-                            label_widget.setText(str(_("network_tab.osc_port")) + ":")
-                        elif field_widget == self.connection_status_label:
-                            label_widget.setText(str(_("network_tab.status")) + ":")
-                    # 处理布局类型的字段（如remote_address_layout）
-                    elif field_item and field_item.layout():
-                        field_layout = field_item.layout()
-                        if field_layout == self.remote_address_layout:
-                            label_widget.setText(str(_("network_tab.remote_address")) + ":")
-
-        # 更新状态标签 - 直接根据当前状态更新，不依赖现有文本
-        if hasattr(self.main_window, 'app_status_online') and self.main_window.app_status_online:
-            self.connection_status_label.setText(str(_("network_tab.online")))
-        else:
-            self.connection_status_label.setText(str(_("network_tab.offline")))
-
-        # 更新按钮文本
-        if self.start_button.isEnabled():
-            self.start_button.setText(str(_("network_tab.connect")))
-        else:
-            self.start_button.setText(str(_("network_tab.disconnect")))
-
-        # 更新语言标签
-        self.language_label.setText(str(_("main.settings.language")) + ":")
-
-        # 更新复选框和按钮文本
-        self.enable_remote_checkbox.setText(str(_("network_tab.enable_remote")))
-        self.get_public_ip_button.setText(str(_("network_tab.get_public_ip")))
-        self.remote_address_edit.setPlaceholderText(_("network_tab.please_enter_valid_ip"))
-
-    def on_remote_enabled_changed(self, state):
-        """处理开启异地复选框状态变化"""
-        is_enabled = bool(state)
-        self.remote_address_edit.setEnabled(is_enabled)
-        self.get_public_ip_button.setEnabled(is_enabled)
-        
-        # 检查远程地址的有效性
-        if is_enabled:
-            remote_address = self.remote_address_edit.text()
-            if remote_address and not self.validate_ip_address(remote_address):
-                # 如果远程地址无效，禁用启动按钮
-                self.start_button.setEnabled(False)
-                self.start_button.setStyleSheet("background-color: grey; color: white;")
-            else:
-                # 远程地址有效或为空，启用启动按钮
-                self.start_button.setEnabled(True)
-                self.start_button.setStyleSheet("background-color: green; color: white;")
-        else:
-            # 未启用远程连接时恢复启动按钮状态
-            self.start_button.setEnabled(True)
-            self.start_button.setStyleSheet("background-color: green; color: white;")
-        
-        # 保存设置
-        self.main_window.settings['enable_remote'] = is_enabled
-        self.save_network_settings()
-
-    def get_public_ip(self):
-        """获取公网IP地址"""
-        try:
-            response = requests.get('http://myip.ipip.net', timeout=5)
-            # 解析返回的文本,通常格式为: "当前 IP：xxx.xxx.xxx.xxx 来自于：xxx"
-            public_ip = response.text.split('：')[1].split(' ')[0]
-            self.remote_address_edit.setText(public_ip)
-            logger.info(f"获取到公网IP: {public_ip}")
-            # 保存设置
-            self.save_network_settings()
-        except Exception as e:
-            error_msg = f"获取公网IP失败: {str(e)}"
-            logger.error(error_msg)
-            # 可以添加错误提示框
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "错误", error_msg)
-
-    def validate_ip_address(self, ip_str: str) -> bool:
-        """验证IP地址格式是否正确"""
-        try:
-            # 分割IP地址
-            parts = ip_str.split('.')
-            # 检查是否为4段
-            if len(parts) != 4:
-                return False
-            # 检查每段是否为0-255的整数
-            for part in parts:
-                if not part.isdigit():
-                    return False
-                num = int(part)
-                if num < 0 or num > 255:
-                    return False
-            return True
-        except (AttributeError, TypeError):
-            return False
-
-    def on_remote_address_changed(self, text: str):
-        """处理远程地址输入变化"""
-        enable_remote = self.enable_remote_checkbox.isChecked()
-        
-        # 当启用远程连接时才进行验证
-        if enable_remote and text:
-            is_valid = self.validate_ip_address(text)
-            # IP地址格式无效时显示红色边框
-            if not is_valid:
-                self.remote_address_edit.setStyleSheet("""
-                    QLineEdit {
-                        border: 1px solid red;
-                        padding: 2px;
-                    }
-                """)
-                # 禁用启动按钮
-                self.start_button.setEnabled(False)
-                self.start_button.setStyleSheet("background-color: grey; color: white;")
-            else:
-                # IP地址格式有效时恢复正常边框
-                self.remote_address_edit.setStyleSheet("")
-                # 启用启动按钮
-                self.start_button.setEnabled(True)
-                self.start_button.setStyleSheet("background-color: green; color: white;")
-                # 保存设置
-                self.save_network_settings()
-        else:
-            # 未启用远程连接或地址为空时恢复正常状态
-            self.remote_address_edit.setStyleSheet("")
-            self.start_button.setEnabled(True)
-            self.start_button.setStyleSheet("background-color: green; color: white;")
+    # ── Legacy compat (OSC parameters tab still calls this) ───────────────────
+    def get_osc_addresses(self) -> list:
+        return []

@@ -7,6 +7,4 @@ psutil
 PySide6
 qasync
 websockets
-aiohttp
 requests
-./pydglab_ws_ycy-1.2.0-py3-none-any.whl

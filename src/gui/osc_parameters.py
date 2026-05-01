@@ -1,15 +1,29 @@
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                               QLineEdit, QCheckBox, QLabel, QListWidget, QListWidgetItem, QAbstractItemView, QSlider)
-from PySide6.QtCore import Qt, Signal, QLocale
+"""osc_parameters.py - OSC address → device action mapping (toy motors + estim channels)."""
+from __future__ import annotations
+
 import logging
-import yaml
 import os
-import asyncio
 
-from i18n import translate as _
+import yaml
+from PySide6.QtCore import QLocale, Qt, Signal
+from PySide6.QtWidgets import (
+    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+    QSlider, QVBoxLayout, QWidget,
+)
+
 from config import get_config_file_path
+from i18n import translate as _
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
+_EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
+
+_TARGET_TYPES = ["toy", "estim"]
+_TOY_CHS   = ("A", "B", "C")
+_ESTIM_CHS = ("A", "B")
+
+_ALL_DEVICES_ADDR = ""
+
 
 class OSCParametersTab(QWidget):
     addresses_updated = Signal()
@@ -17,526 +31,344 @@ class OSCParametersTab(QWidget):
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        self.addresses: list[dict] = []
+        self._devices: dict = {}
 
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
+        layout = QVBoxLayout()
+        self.setLayout(layout)
 
-        # List to display OSC addresses
-        self.address_list_widget = QListWidget()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.address_list_widget.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.address_list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.layout.addWidget(self.address_list_widget)
+        self.list_widget = QListWidget()
+        self.list_widget.setLocale(_EN)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.list_widget)
 
-        # Buttons to add and remove addresses
-        self.button_layout = QHBoxLayout()
-        self.add_button = QPushButton(_("osc_tab.add"))
-        self.remove_button = QPushButton(_("osc_tab.remove"))
-        self.button_layout.addWidget(self.add_button)
-        self.button_layout.addWidget(self.remove_button)
-        self.layout.addLayout(self.button_layout)
+        btn_row = QHBoxLayout()
+        self.add_btn    = QPushButton(str(_("osc_tab.add")))
+        self.remove_btn = QPushButton(str(_("osc_tab.remove")))
+        btn_row.addWidget(self.add_btn)
+        btn_row.addWidget(self.remove_btn)
+        layout.addLayout(btn_row)
 
-        self.add_button.clicked.connect(self.add_address)
-        self.remove_button.clicked.connect(self.remove_address)
+        self.add_btn.clicked.connect(self._add)
+        self.remove_btn.clicked.connect(self._remove)
 
-        # Load existing addresses
-        self.addresses = []
-        self.load_addresses()
+        self._load()
+        self._populate()
 
-        # Update the UI
-        self.update_address_list()
+    # ── Device list ────────────────────────────────────────────────────────────
 
-    def add_address(self):
-        # 添加新地址到数据模型
-        new_address = {
-            'address': '', 
-            'channels': {'A': False, 'B': False},
-            'mapping_ranges': {
-                'A': {'min': 0, 'max': 100},
-                'B': {'min': 0, 'max': 100}
-            }
+    def set_devices(self, devices: dict) -> None:
+        """Called whenever connected devices change."""
+        self._devices = dict(devices)
+        for i in range(self.list_widget.count()):
+            w = self.list_widget.itemWidget(self.list_widget.item(i))
+            if isinstance(w, _OSCAddressWidget):
+                w.update_devices(self._devices)
+
+    # ── CRUD ──────────────────────────────────────────────────────────────────
+
+    def _add(self):
+        entry = {
+            "address":        "",
+            "device_address": "",
+            "target_type":    "toy",
+            "channels":       {"A": True, "B": False, "C": False},
+            "mapping_ranges": {"A": {"min": 0, "max": 100},
+                               "B": {"min": 0, "max": 100},
+                               "C": {"min": 0, "max": 100}},
         }
-        self.addresses.append(new_address)
-        
-        # 添加到UI
-        item = QListWidgetItem()
-        self.address_list_widget.addItem(item)
-        widget = OSCAddressWidget()
-        item.setSizeHint(widget.sizeHint())
-        self.address_list_widget.setItemWidget(item, widget)
-        widget.addressChanged.connect(self.on_address_changed)
-        widget.channelChanged.connect(self.on_channel_changed)
-        widget.mapRangeChanged.connect(self.on_map_range_changed)
-        self.address_list_widget.setCurrentItem(item)
-        
-        # 保存并发送更新信号
-        self.save_addresses()
+        self.addresses.append(entry)
+        self._append_widget(entry)
+        self._save()
         self.addresses_updated.emit()
 
-    def remove_address(self):
-        current_row = self.address_list_widget.currentRow()
-        if current_row >= 0:
-            self.address_list_widget.takeItem(current_row)
-            del self.addresses[current_row]
-            self.save_addresses()
+    def _remove(self):
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self.list_widget.takeItem(row)
+            del self.addresses[row]
+            self._save()
             self.addresses_updated.emit()
 
-    def on_address_changed(self):
-        # 同步 UI 到数据模型，确保二者一致
-        self.sync_ui_to_model()
-        self.save_addresses()
+    # ── Sync ──────────────────────────────────────────────────────────────────
+
+    def _sync(self):
+        new_list = []
+        for i in range(self.list_widget.count()):
+            w = self.list_widget.itemWidget(self.list_widget.item(i))
+            if isinstance(w, _OSCAddressWidget):
+                new_list.append(w.get_data())
+        self.addresses = new_list
+
+    def _on_changed(self):
+        self._sync()
+        self._save()
         self.addresses_updated.emit()
 
-    def on_channel_changed(self):
-        # 同步 UI 到数据模型，确保二者一致
-        self.sync_ui_to_model()
-        self.save_addresses()
-        self.addresses_updated.emit()
+    # ── Persistence ────────────────────────────────────────────────────────────
 
-    def on_map_range_changed(self):
-        """处理映射范围变更事件"""
-        # 同步 UI 到数据模型，确保二者一致
-        self.sync_ui_to_model()
-        self.save_addresses()
-        self.addresses_updated.emit()
-
-    def sync_ui_to_model(self):
-        """同步 UI 到数据模型，重建 self.addresses 列表"""
-        new_addresses = []
-        
-        for i in range(self.address_list_widget.count()):
-            item = self.address_list_widget.item(i)
-            widget = self.address_list_widget.itemWidget(item)
-            
-            if widget:
-                address = widget.address_edit.text()
-                channels = {
-                    'A': widget.channel_a_checkbox.isChecked(),
-                    'B': widget.channel_b_checkbox.isChecked()
-                }
-                # 添加映射范围设置
-                mapping_ranges = {
-                    'A': {
-                        'min': widget.get_a_min_value(),
-                        'max': widget.get_a_max_value()
-                    },
-                    'B': {
-                        'min': widget.get_b_min_value(),
-                        'max': widget.get_b_max_value()
-                    }
-                }
-                new_addresses.append({
-                    'address': address,
-                    'channels': channels,
-                    'mapping_ranges': mapping_ranges
-                })
-        
-        # 更新数据模型
-        self.addresses = new_addresses
-
-    def update_address_list(self):
-        """更新 OSC 地址列表"""
-        new_addresses = []
-        for i in range(self.address_list_widget.count()):
-            widget = self.address_list_widget.itemWidget(self.address_list_widget.item(i))
-            if isinstance(widget, OSCAddressWidget):
-                address = widget.address_edit.text().strip()
-                if address:  # 只添加非空地址
-                    channels = {
-                        'A': widget.channel_a_checkbox.isChecked(),
-                        'B': widget.channel_b_checkbox.isChecked()
-                    }
-                    # 添加映射范围设置
-                    mapping_ranges = {
-                        'A': {
-                            'min': widget.get_a_min_value(),
-                            'max': widget.get_a_max_value()
-                        },
-                        'B': {
-                            'min': widget.get_b_min_value(),
-                            'max': widget.get_b_max_value()
-                        }
-                    }
-                    if channels['A'] or channels['B']:  # 至少选择了一个通道
-                        new_addresses.append({
-                            'address': address,
-                            'channels': channels,
-                            'mapping_ranges': mapping_ranges
-                        })
-        self.addresses = new_addresses
-        logger.info(f"更新 OSC 地址列表: {len(new_addresses)} 个地址")
-        
-        # 如果控制器已初始化，更新 OSC 映射
-        if self.main_window.controller:
-            asyncio.create_task(self.main_window.network_config_tab._update_osc_mappings(self.main_window.controller))
-
-    def save_addresses(self):
-        # Save addresses to a YAML file using unified config path
-        config_path = get_config_file_path('osc_addresses.yml')
+    def _save(self):
+        path = get_config_file_path("osc_addresses.yml")
         try:
-            with open(config_path, 'w', encoding='utf-8') as f:
+            with open(path, "w", encoding="utf-8") as f:
                 yaml.dump(self.addresses, f, allow_unicode=True)
-            logger.info(f"OSC addresses saved to {config_path}")
         except Exception as e:
-            logger.error(f"保存OSC地址配置时出错: {str(e)}")
+            log.error("Save OSC addresses failed: %s", e)
 
-    def load_addresses(self):
-        # 使用统一的配置文件路径处理函数
-        config_path = get_config_file_path('osc_addresses.yml')
-        logger.info(f"尝试从 {config_path} 加载OSC地址配置")
-
+    def _load(self):
+        path = get_config_file_path("osc_addresses.yml")
         try:
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    loaded_data = yaml.safe_load(f)
-                    if loaded_data is None or not isinstance(loaded_data, list):
-                        logger.warning(f"加载的配置无效，使用默认地址")
-                        self.addresses = self.get_default_addresses()
-                    else:
-                        self.addresses = loaded_data
-                        logger.info(f"从文件加载了 {len(self.addresses)} 个OSC地址")
-            else:
-                logger.info("配置文件不存在，使用默认地址")
-                self.addresses = self.get_default_addresses()
-
-            # 将加载的地址更新到UI
-            self.populate_address_list()
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                if isinstance(data, list):
+                    self.addresses = data
+                    return
         except Exception as e:
-            logger.error(f"加载OSC地址时出错: {str(e)}")
-            self.addresses = self.get_default_addresses()
-            self.populate_address_list()
+            log.error("Load OSC addresses failed: %s", e)
+        self.addresses = self._defaults()
 
-    def get_default_addresses(self):
-        """返回默认的OSC地址配置"""
-        logger.info("加载默认OSC地址")
+    def _defaults(self) -> list:
         return [
-            {'address': '/avatar/parameters/DG-LAB/UpperLeg_L', 'channels': {'A': True, 'B': False}},
-            {'address': '/avatar/parameters/DG-LAB/UpperLeg_R', 'channels': {'A': False, 'B': True}},
-            {'address': '/avatar/parameters/Tail_Stretch', 'channels': {'A': False, 'B': False}},
+            {"address": "/avatar/parameters/DG-LAB/UpperLeg_L",
+             "device_address": "", "target_type": "toy",
+             "channels": {"A": True, "B": False, "C": False},
+             "mapping_ranges": {"A": {"min": 0, "max": 100}}},
+            {"address": "/avatar/parameters/DG-LAB/UpperLeg_R",
+             "device_address": "", "target_type": "toy",
+             "channels": {"A": False, "B": True, "C": False},
+             "mapping_ranges": {"B": {"min": 0, "max": 100}}},
         ]
 
-    def populate_address_list(self):
-        """将地址列表填充到UI中"""
-        # 先清空现有列表
-        self.address_list_widget.clear()
-        
-        # 添加每个地址到列表
-        for address_data in self.addresses:
-            item = QListWidgetItem()
-            self.address_list_widget.addItem(item)
-            widget = OSCAddressWidget()
-            
-            # 设置地址
-            widget.address_edit.setText(address_data['address'])
-            
-            # 处理通道选择状态 - 兼容不同格式的数据
-            channels = address_data.get('channels', {})
-            if isinstance(channels, dict):
-                # 字典格式: {'A': True, 'B': False}
-                widget.channel_a_checkbox.setChecked(channels.get('A', False))
-                widget.channel_b_checkbox.setChecked(channels.get('B', False))
-            elif isinstance(channels, list):
-                # 列表格式: ['A', 'B'] 或 ['A']
-                widget.channel_a_checkbox.setChecked('A' in channels)
-                widget.channel_b_checkbox.setChecked('B' in channels)
-            
-            # 处理映射范围设置 - 如果数据中有映射范围信息，则应用它
-            mapping_ranges = address_data.get('mapping_ranges', {})
-            if mapping_ranges and isinstance(mapping_ranges, dict):
-                # A 通道映射范围
-                if 'A' in mapping_ranges and isinstance(mapping_ranges['A'], dict):
-                    a_range = mapping_ranges['A']
-                    widget.set_a_min_value(a_range['min'])
-                    widget.set_a_max_value(a_range['max'])
-                
-                # B 通道映射范围
-                if 'B' in mapping_ranges and isinstance(mapping_ranges['B'], dict):
-                    b_range = mapping_ranges['B']
-                    widget.set_b_min_value(b_range['min'])
-                    widget.set_b_max_value(b_range['max'])
-            
-            # 连接信号
-            widget.addressChanged.connect(self.on_address_changed)
-            widget.channelChanged.connect(self.on_channel_changed)
-            widget.mapRangeChanged.connect(self.on_map_range_changed)
-            
-            item.setSizeHint(widget.sizeHint())
-            self.address_list_widget.setItemWidget(item, widget)
-            
-            # 更新映射范围控件的可见性
-            widget.update_range_visibility()
-        
-        logger.info(f"UI已更新，显示 {len(self.addresses)} 个OSC地址")
+    # ── Widget helpers ─────────────────────────────────────────────────────────
 
-    def get_addresses(self):
-        # Return the list of addresses
+    def _populate(self):
+        self.list_widget.clear()
+        for entry in self.addresses:
+            self._append_widget(entry)
+
+    def _append_widget(self, entry: dict):
+        item   = QListWidgetItem()
+        widget = _OSCAddressWidget(entry, self._devices)
+        widget.changed.connect(self._on_changed)
+        self.list_widget.addItem(item)
+        item.setSizeHint(widget.sizeHint())
+        self.list_widget.setItemWidget(item, widget)
+
+    def get_addresses(self) -> list:
         return self.addresses
 
     def update_ui_texts(self):
-        """更新所有UI文本为当前语言"""
-        # 更新按钮文本
-        self.add_button.setText(_("osc_tab.add"))
-        self.remove_button.setText(_("osc_tab.remove"))
-        
-        # 更新各个地址项的UI
-        for i in range(self.address_list_widget.count()):
-            widget = self.address_list_widget.itemWidget(self.address_list_widget.item(i))
-            if isinstance(widget, OSCAddressWidget):
-                widget.update_ui_texts()
+        self.add_btn.setText(str(_("osc_tab.add")))
+        self.remove_btn.setText(str(_("osc_tab.remove")))
+        for i in range(self.list_widget.count()):
+            w = self.list_widget.itemWidget(self.list_widget.item(i))
+            if isinstance(w, _OSCAddressWidget):
+                w.update_ui_texts()
 
-class OSCAddressWidget(QWidget):
-    addressChanged = Signal()
-    channelChanged = Signal()
-    mapRangeChanged = Signal()
 
-    def __init__(self):
+class _OSCAddressWidget(QWidget):
+    changed = Signal()
+
+    def __init__(self, data: dict, devices: dict):
         super().__init__()
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
-        
-        # 地址和通道选择行
-        self.address_row = QHBoxLayout()
-        self.layout.addLayout(self.address_row)
+        self._building = True
+        layout = QVBoxLayout()
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.setLayout(layout)
 
-        self.address_edit = QLineEdit()
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.address_edit.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.address_edit.setPlaceholderText(_("osc_tab.address_placeholder"))
-        self.address_row.addWidget(self.address_edit)
+        # Row 1: OSC address
+        addr_row = QHBoxLayout()
+        self.addr_edit = QLineEdit()
+        self.addr_edit.setLocale(_EN)
+        self.addr_edit.setPlaceholderText(str(_("osc_tab.address_placeholder")))
+        self.addr_edit.setText(data.get("address", ""))
+        addr_row.addWidget(self.addr_edit)
+        layout.addLayout(addr_row)
 
-        self.channel_a_checkbox = QCheckBox("A")
-        self.address_row.addWidget(self.channel_a_checkbox)
+        # Row 2: device combo + target type
+        dev_row = QHBoxLayout()
+        self._dev_label = QLabel(str(_("osc_tab.device_addr_label")))
+        dev_row.addWidget(self._dev_label)
 
-        self.channel_b_checkbox = QCheckBox("B")
-        self.address_row.addWidget(self.channel_b_checkbox)
-        
-        # A 通道映射范围行
-        self.a_range_row = QHBoxLayout()
-        self.layout.addLayout(self.a_range_row)
-        
-        self.a_range_label = QLabel(_("osc_tab.channel_range_a") + ":")
-        self.a_range_row.addWidget(self.a_range_label)
-        
-        # A通道最小值和最大值在同一行
-        self.a_min_slider = QSlider(Qt.Horizontal)
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.a_min_slider.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.a_min_slider.setRange(0, 100)
-        self.a_min_slider.setValue(0)
-        self.a_min_slider.setFixedWidth(120)
-        self.a_range_row.addWidget(self.a_min_slider)
-        
-        self.a_min_value_label = QLabel(_("osc_tab.min_value") + ":0%")
-        self.a_range_row.addWidget(self.a_min_value_label)
-        
-        self.a_range_row.addSpacing(10)
-        
-        self.a_max_slider = QSlider(Qt.Horizontal)
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.a_max_slider.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.a_max_slider.setRange(0, 100)
-        self.a_max_slider.setValue(100)
-        self.a_max_slider.setFixedWidth(120)
-        self.a_range_row.addWidget(self.a_max_slider)
-        
-        self.a_max_value_label = QLabel(_("osc_tab.max_value") + ":100%")
-        self.a_range_row.addWidget(self.a_max_value_label)
-        
-        self.a_range_row.addStretch()
-        
-        # B 通道映射范围行
-        self.b_range_row = QHBoxLayout()
-        self.layout.addLayout(self.b_range_row)
-        
-        self.b_range_label = QLabel(_("osc_tab.channel_range_b") + ":")
-        self.b_range_row.addWidget(self.b_range_label)
-        
-        # B通道最小值和最大值在同一行
-        self.b_min_slider = QSlider(Qt.Horizontal)
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.b_min_slider.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.b_min_slider.setRange(0, 100)
-        self.b_min_slider.setValue(0)
-        self.b_min_slider.setFixedWidth(120)
-        self.b_range_row.addWidget(self.b_min_slider)
-        
-        self.b_min_value_label = QLabel(_("osc_tab.min_value") + ":0%")
-        self.b_range_row.addWidget(self.b_min_value_label)
-        
-        self.b_range_row.addSpacing(10)
-        
-        self.b_max_slider = QSlider(Qt.Horizontal)
-        # 强制使用英文区域设置，避免数字显示为繁体中文
-        self.b_max_slider.setLocale(QLocale(QLocale.Language.English, QLocale.Country.UnitedStates))
-        self.b_max_slider.setRange(0, 100)
-        self.b_max_slider.setValue(100)
-        self.b_max_slider.setFixedWidth(120)
-        self.b_range_row.addWidget(self.b_max_slider)
-        
-        self.b_max_value_label = QLabel(_("osc_tab.max_value") + ":100%")
-        self.b_range_row.addWidget(self.b_max_value_label)
-        
-        self.b_range_row.addStretch()
-        
-        # 连接信号
-        self.address_edit.textChanged.connect(self.addressChanged)
-        self.channel_a_checkbox.stateChanged.connect(self.on_channel_changed)
-        self.channel_b_checkbox.stateChanged.connect(self.on_channel_changed)
-        
-        self.a_min_slider.valueChanged.connect(self.on_a_min_changed)
-        self.a_max_slider.valueChanged.connect(self.on_a_max_changed)
-        self.b_min_slider.valueChanged.connect(self.on_b_min_changed)
-        self.b_max_slider.valueChanged.connect(self.on_b_max_changed)
-        
-        # 初始状态更新
-        self.update_range_visibility()
-    
-    def on_channel_changed(self):
-        self.update_range_visibility()
-        self.channelChanged.emit()
-    
-    def update_range_visibility(self):
-        """根据通道选择状态更新映射范围控件的可见性"""
-        is_a_visible = self.channel_a_checkbox.isChecked()
-        is_b_visible = self.channel_b_checkbox.isChecked()
-        
-        # A通道控件可见性
-        self.a_range_label.setVisible(is_a_visible)
-        self.a_min_slider.setVisible(is_a_visible)
-        self.a_min_value_label.setVisible(is_a_visible)
-        self.a_max_slider.setVisible(is_a_visible)
-        self.a_max_value_label.setVisible(is_a_visible)
-        
-        # B通道控件可见性
-        self.b_range_label.setVisible(is_b_visible)
-        self.b_min_slider.setVisible(is_b_visible)
-        self.b_min_value_label.setVisible(is_b_visible)
-        self.b_max_slider.setVisible(is_b_visible)
-        self.b_max_value_label.setVisible(is_b_visible)
-        
-        # 强制更新布局
-        if hasattr(self.layout, 'invalidate') and hasattr(self.layout, 'activate'):
-            self.layout.invalidate()
-            self.layout.activate()
-        
-        # 首先更新自身大小
-        self.adjustSize()
-        
-        # 尝试找到父级QListWidget和对应的QListWidgetItem
-        # 注意：可能存在多层嵌套的情况
-        def find_list_widget_parent(widget):
-            if widget is None:
-                return None
-            if isinstance(widget, QListWidget):
-                return widget
-            return find_list_widget_parent(widget.parent())
-        
-        list_widget = find_list_widget_parent(self.parent())
-        if list_widget:
-            # 查找对应的item并更新其大小
-            for i in range(list_widget.count()):
-                item = list_widget.item(i)
-                if item and list_widget.itemWidget(item) == self:
-                    current_size = self.sizeHint()
-                    if current_size.isValid():
-                        item.setSizeHint(current_size)
-                    # 使用QWidget的标准update()方法，不需要参数
-                    list_widget.viewport().update()  # 更新列表视图的可视区域
+        self.dev_combo = QComboBox()
+        self.dev_combo.setLocale(_EN)
+        self._populate_device_combo(devices, data.get("device_address", ""))
+        dev_row.addWidget(self.dev_combo, 1)
+
+        self._type_label = QLabel(str(_("osc_tab.type_label")))
+        dev_row.addWidget(self._type_label)
+        self.type_combo = QComboBox()
+        self.type_combo.setLocale(_EN)
+        self.type_combo.addItems(_TARGET_TYPES)
+        current_type = data.get("target_type", "toy")
+        self.type_combo.setCurrentIndex(_TARGET_TYPES.index(current_type)
+                                        if current_type in _TARGET_TYPES else 0)
+        dev_row.addWidget(self.type_combo)
+        layout.addLayout(dev_row)
+
+        # Row 3: channel checkboxes
+        ch_row = QHBoxLayout()
+        self._checks: dict[str, QCheckBox] = {}
+        channels = data.get("channels", {})
+        for ch in _TOY_CHS:
+            cb = QCheckBox(ch)
+            cb.setChecked(bool(channels.get(ch, False)))
+            ch_row.addWidget(cb)
+            self._checks[ch] = cb
+        ch_row.addStretch()
+        layout.addLayout(ch_row)
+
+        # Range rows per channel
+        self._range_widgets: dict[str, _RangeRow] = {}
+        ranges = data.get("mapping_ranges", {})
+        for ch in _TOY_CHS:
+            r  = ranges.get(ch, {"min": 0, "max": 100})
+            rw = _RangeRow(ch, r.get("min", 0), r.get("max", 100))
+            rw.changed.connect(self.changed)
+            self._range_widgets[ch] = rw
+            layout.addWidget(rw)
+
+        self._building = False
+        self._update_visibility()
+
+        # Signals
+        self.addr_edit.textChanged.connect(self._emit)
+        self.dev_combo.currentIndexChanged.connect(self._emit)
+        self.type_combo.currentIndexChanged.connect(self._on_type_changed)
+        for cb in self._checks.values():
+            cb.stateChanged.connect(self._on_check_changed)
+
+    def _populate_device_combo(self, devices: dict, selected_addr: str = "") -> None:
+        self.dev_combo.clear()
+        self.dev_combo.addItem(str(_("osc_tab.all_devices")), _ALL_DEVICES_ADDR)
+        for addr, info in devices.items():
+            name  = info.get("name", addr[-8:])
+            dtype = info.get("type", "?")
+            self.dev_combo.addItem(f"{name}  [{dtype}]  ({addr[-8:]})", addr)
+        idx = 0
+        if selected_addr:
+            for i in range(self.dev_combo.count()):
+                if self.dev_combo.itemData(i) == selected_addr:
+                    idx = i
                     break
-        
-        # 更新几何属性
-        self.updateGeometry()
-    
-    def on_a_min_changed(self, value):
-        """A通道最小值变更处理"""
-        # 更新标签显示
-        self.a_min_value_label.setText(f"{_('osc_tab.min_value')}:{value}%")
-        
-        # 确保最小值不大于最大值
-        if value > self.a_max_slider.value():
-            self.a_max_slider.setValue(value)
-        
-        self.mapRangeChanged.emit()
-    
-    def on_a_max_changed(self, value):
-        """A通道最大值变更处理"""
-        # 更新标签显示
-        self.a_max_value_label.setText(f"{_('osc_tab.max_value')}:{value}%")
-        
-        # 确保最大值不小于最小值
-        if value < self.a_min_slider.value():
-            self.a_min_slider.setValue(value)
-        
-        self.mapRangeChanged.emit()
-    
-    def on_b_min_changed(self, value):
-        """B通道最小值变更处理"""
-        # 更新标签显示
-        self.b_min_value_label.setText(f"{_('osc_tab.min_value')}:{value}%")
-        
-        # 确保最小值不大于最大值
-        if value > self.b_max_slider.value():
-            self.b_max_slider.setValue(value)
-        
-        self.mapRangeChanged.emit()
-    
-    def on_b_max_changed(self, value):
-        """B通道最大值变更处理"""
-        # 更新标签显示
-        self.b_max_value_label.setText(f"{_('osc_tab.max_value')}:{value}%")
-        
-        # 确保最大值不小于最小值
-        if value < self.b_min_slider.value():
-            self.b_min_slider.setValue(value)
-        
-        self.mapRangeChanged.emit()
-    
-    def get_a_min_value(self):
-        """获取A通道最小值"""
-        return self.a_min_slider.value()
-    
-    def get_a_max_value(self):
-        """获取A通道最大值"""
-        return self.a_max_slider.value()
-    
-    def get_b_min_value(self):
-        """获取B通道最小值"""
-        return self.b_min_slider.value()
-    
-    def get_b_max_value(self):
-        """获取B通道最大值"""
-        return self.b_max_slider.value()
-    
-    def set_a_min_value(self, value):
-        """设置A通道最小值"""
-        self.a_min_slider.setValue(int(value))
-    
-    def set_a_max_value(self, value):
-        """设置A通道最大值"""
-        self.a_max_slider.setValue(int(value))
-    
-    def set_b_min_value(self, value):
-        """设置B通道最小值"""
-        self.b_min_slider.setValue(int(value))
-    
-    def set_b_max_value(self, value):
-        """设置B通道最大值"""
-        self.b_max_slider.setValue(int(value))
+        self.dev_combo.setCurrentIndex(idx)
+
+    def update_devices(self, devices: dict) -> None:
+        current_addr = self.dev_combo.currentData() or ""
+        self._building = True
+        self._populate_device_combo(devices, current_addr)
+        self._building = False
+
+    def _on_type_changed(self, *_):
+        is_toy = self.type_combo.currentText() == "toy"
+        self._checks["C"].setVisible(is_toy)
+        if not is_toy:
+            self._checks["C"].setChecked(False)
+        self._update_visibility()
+        self._emit()
+
+    def _on_check_changed(self):
+        self._update_visibility()
+        self._emit()
+
+    def _update_visibility(self):
+        is_toy = self.type_combo.currentText() == "toy"
+        chs = _TOY_CHS if is_toy else _ESTIM_CHS
+        for ch in _TOY_CHS:
+            visible = ch in chs and self._checks[ch].isChecked()
+            self._range_widgets[ch].setVisible(visible)
+        self.adjustSize()
+        parent = self.parent()
+        while parent and not isinstance(parent, QListWidget):
+            parent = parent.parent()
+        if parent:
+            for i in range(parent.count()):
+                item = parent.item(i)
+                if parent.itemWidget(item) is self:
+                    item.setSizeHint(self.sizeHint())
+                    parent.viewport().update()
+                    break
+
+    def _emit(self):
+        if not self._building:
+            self.changed.emit()
+
+    def get_data(self) -> dict:
+        chs    = {ch: self._checks[ch].isChecked() for ch in _TOY_CHS}
+        ranges = {ch: self._range_widgets[ch].get_range() for ch in _TOY_CHS}
+        return {
+            "address":        self.addr_edit.text(),
+            "device_address": self.dev_combo.currentData() or "",
+            "target_type":    self.type_combo.currentText(),
+            "channels":       chs,
+            "mapping_ranges": ranges,
+        }
 
     def update_ui_texts(self):
-        """更新所有UI文本为当前语言"""
-        # 更新各个地址项的UI
-        self.address_edit.setPlaceholderText(_("osc_tab.address_placeholder"))
-        self.a_range_label.setText(_("osc_tab.channel_range_a") + ":")
-        self.b_range_label.setText(_("osc_tab.channel_range_b") + ":")
-        
-        # 更新滑块值标签
-        a_min_value = self.a_min_slider.value()
-        a_max_value = self.a_max_slider.value()
-        b_min_value = self.b_min_slider.value()
-        b_max_value = self.b_max_slider.value()
-        
-        self.a_min_value_label.setText(f"{_('osc_tab.min_value')}:{a_min_value}%")
-        self.a_max_value_label.setText(f"{_('osc_tab.max_value')}:{a_max_value}%")
-        self.b_min_value_label.setText(f"{_('osc_tab.min_value')}:{b_min_value}%")
-        self.b_max_value_label.setText(f"{_('osc_tab.max_value')}:{b_max_value}%")
+        self.addr_edit.setPlaceholderText(str(_("osc_tab.address_placeholder")))
+        self._dev_label.setText(str(_("osc_tab.device_addr_label")))
+        self._type_label.setText(str(_("osc_tab.type_label")))
+        if self.dev_combo.count() > 0:
+            self.dev_combo.setItemText(0, str(_("osc_tab.all_devices")))
+        for rw in self._range_widgets.values():
+            rw.update_ui_texts()
+
+
+class _RangeRow(QWidget):
+    changed = Signal()
+
+    def __init__(self, channel: str, lo: int, hi: int):
+        super().__init__()
+        self._ch = channel
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(layout)
+
+        layout.addWidget(QLabel(f"{channel} {_('osc_tab.channel_range')}:"))
+
+        self.min_slider = QSlider(Qt.Horizontal)
+        self.min_slider.setLocale(_EN)
+        self.min_slider.setRange(0, 100)
+        self.min_slider.setValue(lo)
+        self.min_slider.setFixedWidth(100)
+        layout.addWidget(self.min_slider)
+
+        self.min_lbl = QLabel(f"{_('osc_tab.min_value')}:{lo}%")
+        layout.addWidget(self.min_lbl)
+        layout.addSpacing(8)
+
+        self.max_slider = QSlider(Qt.Horizontal)
+        self.max_slider.setLocale(_EN)
+        self.max_slider.setRange(0, 100)
+        self.max_slider.setValue(hi)
+        self.max_slider.setFixedWidth(100)
+        layout.addWidget(self.max_slider)
+
+        self.max_lbl = QLabel(f"{_('osc_tab.max_value')}:{hi}%")
+        layout.addWidget(self.max_lbl)
+        layout.addStretch()
+
+        self.min_slider.valueChanged.connect(self._on_min)
+        self.max_slider.valueChanged.connect(self._on_max)
+
+    def _on_min(self, v):
+        self.min_lbl.setText(f"{_('osc_tab.min_value')}:{v}%")
+        if v > self.max_slider.value():
+            self.max_slider.setValue(v)
+        self.changed.emit()
+
+    def _on_max(self, v):
+        self.max_lbl.setText(f"{_('osc_tab.max_value')}:{v}%")
+        if v < self.min_slider.value():
+            self.min_slider.setValue(v)
+        self.changed.emit()
+
+    def get_range(self) -> dict:
+        return {"min": self.min_slider.value(), "max": self.max_slider.value()}
+
+    def update_ui_texts(self):
+        lo = self.min_slider.value()
+        hi = self.max_slider.value()
+        self.min_lbl.setText(f"{_('osc_tab.min_value')}:{lo}%")
+        self.max_lbl.setText(f"{_('osc_tab.max_value')}:{hi}%")

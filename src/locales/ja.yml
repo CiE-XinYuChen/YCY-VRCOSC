@@ -1,6 +1,5 @@
-# 日本語翻訳ファイル
 main:
-  title: "DG-Lab WebSocket Controller for VRChat"
+  title: "YokoNex Toy Controller for VRChat"
   tabs:
     network: "ネットワーク設定"
     controller: "コントローラー設定"
@@ -12,20 +11,30 @@ main:
 
 network_tab:
   title: "ネットワーク設定"
-  interface: "ネットワークインターフェース"
-  ip_address: "IPアドレス"
-  websocket_port: "WebSocketポート"
+  server_group: "YokoNex サーバー"
+  device_group: "BLE デバイス"
+  yokonex_host: "サーバーアドレス"
+  yokonex_port: "サーバーポート"
   osc_port: "OSCポート"
   connect: "接続"
-  disconnect: "切断"
+  connecting: "接続中..."
+  connected: "接続済み"
+  disconnected: "未接続"
   status: "状態"
-  online: "オンライン"
-  offline: "オフライン、接続後にQRコードをスキャンしてください"
-  start: "開始"
-  remote_address: "リモートアドレス"
-  enable_remote: "遠隔モードを開始する"
-  get_public_ip: "パブリックIPを取得する"
-  please_enter_valid_ip: "有効なIPを入力してください"
+  scan: "デバイスをスキャン"
+  scanning: "スキャン中..."
+  device: "デバイス"
+  no_devices: "デバイスなし"
+  no_devices_found: "デバイスが見つかりません。デバイスの電源を確認してください。"
+  connect_device: "デバイス接続"
+  disconnect_device: "切断"
+  device_status: "デバイス状態"
+  device_online: "デバイス接続済み"
+  device_offline: "デバイス未接続"
+  relay_mode: "クラウドリレー経由で接続"
+  relay_token: "クライアントトークン"
+  relay_agent: "Agent ID"
+  relay_list_agents: "一覧…"
 
 controller_tab:
   title: "コントローラー設定"
@@ -33,6 +42,7 @@ controller_tab:
   intensity: "チャンネル強度"
   channel_intensity: "チャンネル強度"
   intensity_limit: "強度上限"
+  cap_label: "上限:"
   target_strength: "目標強度"
   mode: "制御モード"
   pulse_mode: "パルスモード"
@@ -50,6 +60,7 @@ controller_tab:
   enable_interaction: "インタラクション制御を有効化"
   interaction_control: "チャンネルインタラクション"
   enable_game_integration: "ゲーム連携を有効化"
+  osc_soft_limit: "OSC ソフト上限"
 
 osc_tab:
   title: "OSCパラメータ"
@@ -112,6 +123,7 @@ about_tab:
   current_version: "現在のバージョン"
   check_update: "更新を確認"
   automatic_update_check: "自動更新確認を有効にする"
+  online_update_disabled: "オンライン更新は無効化されています"
   already_latest_version: "現在のバージョンは最新です"
   discover_new_version: "新しいバージョンが見つかりました"
   new_version: "新バージョン"

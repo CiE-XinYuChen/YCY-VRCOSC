@@ -52,7 +52,7 @@ jobs:
       shell: pwsh
     - name: Build with PyInstaller
       run: |
-        pyinstaller DG-LAB-VRCOSC.spec
+        pyinstaller YCY-VRCOSC-TOY.spec
       shell: pwsh
 
     - name: Generate commit hash and timestamp file
@@ -67,5 +67,5 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: DG-LAB-VRCOSC-${{ env.VERSION }}
+        name: YCY-VRCOSC-TOY-${{ env.VERSION }}
         path: dist/
