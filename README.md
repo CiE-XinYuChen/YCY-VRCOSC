@@ -36,6 +36,19 @@ VRChat ──OSC UDP:9001──► YCY-VRCOSC (本程序)
 ---
 
 ## 快速开始
+# **YCY-VRCOSC**
+这是与 **VRChat** 游戏联动的役次元 (YCY/YOKONEX) 设备控制程序，通过 VRChat 游戏内的 avatars 互动和其他事件来控制设备的输出。
+
+> 基于 [PyDGLab-WS-for-YCY](https://github.com/CiE-XinYuChen/PyDGLab-WS-for-YCY) 实现电击器功能， [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI) 实现飞机杯功能，后续电击器将迁移到该协议
+> main分支支持电击器一代，DJJ-2.0分支支持电击器2代，ZJJPRO支持榨精机PRO设备，理论支持所有Yokonex的跳蛋/飞机杯设备，使用可能略有差异。
+
+- **VRChat Avatar 联动功能** ( **OSC**)：
+  - **面板控制模式**：通过 VRSuya 的 [SoundPad](https://booth.pm/zh-cn/items/5950846) 进行控制，映射按键到设备功能。同时也支持**远程控制**，你可以通过自己 avatar 上的面板控制其他安装相同面板玩家的设备。
+  - **交互控制模式**：支持通过 VRChat 的 Contact 或 Physbones 参数进行控制，让 avatar 之间的交互可以控制设备输出（ 例如触碰或是拉伸动骨）。
+  - **ChatBox 显示**：可以通过 VRChat 的 ChatBox 显示当前设备信息。
+
+**补充说明：**
+- 面板控制功能需要在 Booth 购买 [声音面板](https://booth.pm/zh-cn/items/5950846) 后将资源导入工程，再导入本项目提供的修改包，将修改包内提供的 prefab 安装到您的 avatar 中。
 
 ### 1. 安装依赖
 
@@ -60,6 +73,10 @@ python src/app.py
 ```
 
 ### 4. 连接流程
+1. 下载 Release 中的对应版本，（若无自行版本请自行布置环境）
+2. 扫描设备，连接成功后即可开始使用
+
+> 注意：你需要修改你使用的模型，才能让此程序与游戏中的 avatar 联动。
 
 1. **网络配置** 标签页 → 填写服务器地址（默认 `127.0.0.1:8765`）→ 点击 **连接**
 2. 点击 **扫描设备** → 下拉选择发现的设备 → 选择类型（toy / estim）→ 点击 **+ 连接**
