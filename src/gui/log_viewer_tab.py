@@ -115,14 +115,15 @@ class LogViewerTab(QWidget):
             return
 
         lines = [
-            f"Device: {ctrl.device_address}",
-            f"Motor: {ctrl.current_motor}",
-            f"Speed  A:{ctrl.motor_speeds['A']} B:{ctrl.motor_speeds['B']} C:{ctrl.motor_speeds['C']}",
-            f"Mode   A:{ctrl.motor_modes['A']} B:{ctrl.motor_modes['B']} C:{ctrl.motor_modes['C']}",
-            f"Fire step: {ctrl.fire_step}  Adjust: {ctrl.adjust_step}",
-            f"ChatBox: {ctrl.enable_chatbox}",
-            f"Panel: {ctrl.enable_panel}  Interaction: {ctrl.enable_interaction}",
-            f"Queue: {ctrl._cmd_queue.qsize()}",
+            f"Devices: {len(ctrl.devices)}",
+        ]
+        for addr, info in ctrl.devices.items():
+            state = ctrl._device_states.get(addr, {})
+            lines.append(f"  {info.get('name', addr[-8:])} [{info.get('type','?')}]  {state}")
+        lines += [
+            f"Panel: {ctrl._current_panel + 1}",
+            f"ChatBox: {ctrl.chatbox_enabled}  interval={ctrl.chatbox_interval}s",
+            f"Hold tasks: {len(ctrl._hold_tasks)}",
         ]
         self.param_label.setText("\n".join(lines))
 

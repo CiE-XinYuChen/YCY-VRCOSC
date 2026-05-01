@@ -1,0 +1,451 @@
+panels:
+- buttons:
+  - actions:
+    - action: toggle_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+    - action: toggle_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+    index: 0
+    label: 模式
+  - actions:
+    - action: adjust_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: A
+        delta: -9999
+    - action: adjust_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: B
+        delta: -9999
+    index: 1
+    label: 归零
+  - actions:
+    - action: adjust_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: A
+        delta: -5
+    - action: adjust_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: B
+        delta: -5
+    index: 2
+    label: −5
+  - actions:
+    - action: adjust_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: A
+        delta: 5
+    - action: adjust_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: B
+        delta: 5
+    index: 3
+    label: '+5'
+  - actions:
+    - action: fire_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: A
+        fire_intensity: 30
+    - action: fire_channel
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      params:
+        channel: B
+        fire_intensity: 30
+    index: 4
+    label: +30🔥
+  - actions:
+    - action: toggle_chatbox
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: ''
+      once: true
+      params: {}
+    index: 5
+    label: ChatBox
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 1
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 1
+    index: 6
+    label: 波形 1
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 2
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 2
+    index: 7
+    label: 波形 2
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 3
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 3
+    index: 8
+    label: 波形 3
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 4
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 4
+    index: 9
+    label: 波形 4
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 5
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 5
+    index: 10
+    label: 波形 5
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 6
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 6
+    index: 11
+    label: 波形 6
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 7
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 7
+    index: 12
+    label: 波形 7
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 8
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 8
+    index: 13
+    label: 波形 8
+  - actions:
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: A
+        mode: 9
+    - action: set_channel_mode
+      device_address: 8117C168-FCD9-CC32-D733-44AEC28D5960
+      device_type: estim
+      once: true
+      params:
+        channel: B
+        mode: 9
+    index: 14
+    label: 波形 9
+  name: 马达 A
+- buttons:
+  - actions:
+    - action: stop
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params: {}
+    index: 0
+    label: 停止
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: -999
+        motor: A
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: -999
+        motor: C
+    index: 1
+    label: 归零
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: -2
+        motor: A
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: -2
+        motor: C
+    index: 2
+    label: −2
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: 2
+        motor: A
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: 2
+        motor: C
+    index: 3
+    label: '+2'
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: 999
+        motor: A
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: 999
+        motor: C
+    index: 4
+    label: 全速
+  - actions:
+    - action: toggle_chatbox
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: ''
+      once: true
+      params: {}
+    index: 5
+    label: ChatBox
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 1
+        motors: AC
+    index: 6
+    label: 模式 1
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 2
+        motors: AC
+    index: 7
+    label: 模式 2
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 3
+        motors: AC
+    index: 8
+    label: 模式 3
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 4
+        motors: AC
+    index: 9
+    label: 模式 4
+  name: 马达 B
+- buttons:
+  - actions:
+    - action: stop
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params: {}
+    index: 0
+    label: 停止
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: -999
+        motor: B
+    index: 1
+    label: 归零
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: -2
+        motor: B
+    index: 2
+    label: −2
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: 2
+        motor: B
+    index: 3
+    label: '+2'
+  - actions:
+    - action: adjust_speed
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      params:
+        delta: 999
+        motor: B
+    index: 4
+    label: 全速
+  - actions:
+    - action: toggle_chatbox
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: ''
+      once: true
+      params: {}
+    index: 5
+    label: ChatBox
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 1
+        motors: B
+    index: 6
+    label: 模式 1
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 2
+        motors: B
+    index: 7
+    label: 模式 2
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 3
+        motors: B
+    index: 8
+    label: 模式 3
+  - actions:
+    - action: set_mode
+      device_address: B4888E48-7663-211D-5A5D-AC6C7AA159E8
+      device_type: toy
+      once: true
+      params:
+        mode: 4
+        motors: B
+    index: 9
+    label: 模式 4
+  name: 马达 AB

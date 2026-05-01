@@ -1,24 +1,39 @@
-"""network_config_tab.py - YokoNex server connection + BLE device management + OSC server."""
+"""network_config_tab.py — YokoNex server connection + multi-device management + OSC server."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import logging
 
 from PySide6.QtCore import Qt, QLocale
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 from pythonosc import dispatcher, osc_server, udp_client
 
-from config import get_active_ip_addresses, save_settings
+from config import save_settings
+from fusion_controller import FusionController
 from i18n import LANGUAGES, get_current_language, language_signals, set_language, translate as _
-from toy_controller import ToyController
 from yokonex_client import YokoNexClient
 
 log = logging.getLogger(__name__)
 _EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
+
+_DEVICE_TYPES = ["toy", "estim"]
+
+
+def _spawn(coro):
+    """Create an asyncio task with an isolated context (Python 3.13 workaround).
+
+    Calling create_task from within an OSC callback or any running-task context
+    can cause 'Cannot enter into task' errors in Python 3.13.  Scheduling via
+    call_soon ensures the task is created from the event-loop's base context.
+    """
+    loop = asyncio.get_event_loop()
+    loop.call_soon(lambda: loop.create_task(coro, context=contextvars.copy_context()))
 
 
 class NetworkConfigTab(QWidget):
@@ -26,21 +41,22 @@ class NetworkConfigTab(QWidget):
         super().__init__()
         self.main_window = main_window
 
-        # Runtime state
         self._yokonex: YokoNexClient | None = None
-        self._osc_transport = None
-        self._osc_protocol  = None
+        self._osc_transport  = None
+        self._osc_protocol   = None
         self._osc_dispatcher = dispatcher.Dispatcher()
-        self._osc_handlers: dict = {}
         self._panel_handlers: dict = {}
+        self._osc_interaction_handlers: dict = {}
         self._osc_signal_connected = False
         self._scan_task: asyncio.Task | None = None
 
+        # (address, name, type) of scanned devices waiting to be connected
+        self._scanned: list[dict] = []
+
         self._build_ui()
-        self._connect_signals()
         language_signals.language_changed.connect(self.update_ui_texts)
 
-    # ── UI construction ────────────────────────────────────────────────────────
+    # ── UI ─────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -61,7 +77,6 @@ class NetworkConfigTab(QWidget):
         self.yokonex_port_spin.setValue(self.main_window.settings.get("yokonex_port", 8765))
         srv_form.addRow(str(_("network_tab.yokonex_port")) + ":", self.yokonex_port_spin)
 
-        # ── Cloud relay mode ──────────────────────────────────────────────
         self.relay_check = QCheckBox(str(_("network_tab.relay_mode")))
         self.relay_check.setChecked(self.main_window.settings.get("relay_mode", False))
         srv_form.addRow(self.relay_check)
@@ -107,31 +122,47 @@ class NetworkConfigTab(QWidget):
         # ── Device group ──────────────────────────────────────────────────────
         self.device_group = QGroupBox(str(_("network_tab.device_group")))
         self.device_group.setEnabled(False)
-        dev_form = QFormLayout()
+        dev_layout = QVBoxLayout()
 
+        # Scan row
+        scan_row = QHBoxLayout()
         self.scan_btn = QPushButton(str(_("network_tab.scan")))
-        dev_form.addRow(self.scan_btn)
+        self.scan_combo = QComboBox()
+        self.scan_combo.setLocale(_EN)
+        self.scan_combo.setPlaceholderText(str(_("network_tab.no_devices")))
+        self.scan_combo.setMinimumWidth(200)
+        scan_row.addWidget(self.scan_btn)
+        scan_row.addWidget(self.scan_combo, 1)
+        dev_layout.addLayout(scan_row)
 
-        self.device_combo = QComboBox()
-        self.device_combo.setLocale(_EN)
-        self.device_combo.setPlaceholderText(str(_("network_tab.no_devices")))
-        dev_form.addRow(str(_("network_tab.device")) + ":", self.device_combo)
+        # Device type + add row
+        add_row = QHBoxLayout()
+        self.dtype_combo = QComboBox()
+        self.dtype_combo.setLocale(_EN)
+        for t in _DEVICE_TYPES:
+            self.dtype_combo.addItem(t)
+        self.add_device_btn = QPushButton(str(_("network_tab.connect_device_btn")))
+        self.add_device_btn.setStyleSheet("background-color: #2d862d; color: white;")
+        add_row.addWidget(QLabel(str(_("network_tab.type_label"))))
+        add_row.addWidget(self.dtype_combo)
+        add_row.addWidget(self.add_device_btn)
+        add_row.addStretch()
+        dev_layout.addLayout(add_row)
 
-        dev_btn_row = QHBoxLayout()
-        self.connect_device_btn = QPushButton(str(_("network_tab.connect_device")))
-        self.connect_device_btn.setStyleSheet("background-color: green; color: white;")
-        self.disconnect_device_btn = QPushButton(str(_("network_tab.disconnect_device")))
-        self.disconnect_device_btn.setEnabled(False)
-        dev_btn_row.addWidget(self.connect_device_btn)
-        dev_btn_row.addWidget(self.disconnect_device_btn)
-        dev_form.addRow(dev_btn_row)
+        # Connected devices list
+        dev_layout.addWidget(QLabel(str(_("network_tab.connected_devices"))))
+        self.device_list = QListWidget()
+        self.device_list.setMinimumHeight(90)
+        dev_layout.addWidget(self.device_list)
 
-        self.device_status_label = QLabel(str(_("network_tab.device_offline")))
-        self.device_status_label.setAlignment(Qt.AlignCenter)
-        dev_form.addRow(str(_("network_tab.device_status")) + ":", self.device_status_label)
-        self._set_label_style(self.device_status_label, "red")
+        remove_row = QHBoxLayout()
+        self.remove_device_btn = QPushButton(str(_("network_tab.disconnect_selected")))
+        self.remove_device_btn.setEnabled(False)
+        remove_row.addWidget(self.remove_device_btn)
+        remove_row.addStretch()
+        dev_layout.addLayout(remove_row)
 
-        self.device_group.setLayout(dev_form)
+        self.device_group.setLayout(dev_layout)
         root.addWidget(self.device_group)
 
         # ── Language ──────────────────────────────────────────────────────────
@@ -152,11 +183,13 @@ class NetworkConfigTab(QWidget):
         root.addLayout(lang_row)
         root.addStretch()
 
-    def _connect_signals(self):
+        # Signals
         self.connect_btn.clicked.connect(self._on_connect_clicked)
         self.scan_btn.clicked.connect(self._on_scan_clicked)
-        self.connect_device_btn.clicked.connect(self._on_connect_device_clicked)
-        self.disconnect_device_btn.clicked.connect(self._on_disconnect_device_clicked)
+        self.add_device_btn.clicked.connect(self._on_add_device_clicked)
+        self.remove_device_btn.clicked.connect(self._on_remove_device_clicked)
+        self.device_list.itemSelectionChanged.connect(self._on_selection_changed)
+        self.device_list.currentItemChanged.connect(self._on_selection_changed)
         self.relay_check.stateChanged.connect(self._on_relay_toggled)
         self.relay_list_btn.clicked.connect(self._on_list_agents_clicked)
         self.lang_combo.currentTextChanged.connect(self._on_language_changed)
@@ -169,25 +202,30 @@ class NetworkConfigTab(QWidget):
     # ── Button handlers ────────────────────────────────────────────────────────
 
     def _on_connect_clicked(self):
-        asyncio.create_task(self._connect_to_yokonex())
+        _spawn(self._connect_to_yokonex())
 
     def _on_scan_clicked(self):
         if self._scan_task and not self._scan_task.done():
             return
-        self._scan_task = asyncio.create_task(self._do_scan())
+        _spawn(self._do_scan())
 
-    def _on_connect_device_clicked(self):
-        asyncio.create_task(self._connect_device())
+    def _on_add_device_clicked(self):
+        _spawn(self._add_device())
 
-    def _on_disconnect_device_clicked(self):
-        asyncio.create_task(self._disconnect_device())
+    def _on_remove_device_clicked(self):
+        _spawn(self._remove_device())
+
+    def _on_selection_changed(self, *_):
+        has = (len(self.device_list.selectedItems()) > 0
+               or self.device_list.currentItem() is not None)
+        self.remove_device_btn.setEnabled(has)
 
     def _on_relay_toggled(self, state: int):
         self._set_relay_fields_visible(bool(state))
         self._save_settings()
 
     def _on_list_agents_clicked(self):
-        asyncio.create_task(self._list_and_pick_agent())
+        _spawn(self._list_and_pick_agent())
 
     # ── Async operations ───────────────────────────────────────────────────────
 
@@ -207,8 +245,7 @@ class NetworkConfigTab(QWidget):
             agent_id = self.relay_agent_edit.text().strip()
             if not token or not agent_id:
                 QMessageBox.warning(self, "Error",
-                                    "Cloud relay mode requires both Token and Agent ID.\n"
-                                    "Use the '…' button to list available agents.")
+                                    "Cloud relay mode requires both Token and Agent ID.")
                 self.connect_btn.setEnabled(True)
                 self.connect_btn.setText(str(_("network_tab.connect")))
                 return
@@ -220,12 +257,8 @@ class NetworkConfigTab(QWidget):
             self.connect_btn.setEnabled(True)
             self.connect_btn.setText(str(_("network_tab.connect")))
             self._set_yokonex_status(False)
-            hint = (f"Cannot connect to relay at {url}\n"
-                    "Check the server URL, token, and agent ID."
-                    if relay_mode else
-                    f"Cannot connect to YokoNex at {url}\n"
-                    "Make sure 'yokonex server' is running.")
-            QMessageBox.warning(self, "Error", hint)
+            QMessageBox.warning(self, "Error",
+                                f"Cannot connect to {'relay' if relay_mode else 'YokoNex'} at {url}")
             return
 
         self._yokonex = client
@@ -233,21 +266,41 @@ class NetworkConfigTab(QWidget):
         self._set_yokonex_status(True)
         self.connect_btn.setText(str(_("network_tab.connected")))
 
+        # Create FusionController
+        osc_out    = udp_client.SimpleUDPClient("127.0.0.1", 9000)
+        controller = FusionController(client, osc_out, self.main_window)
+        self.main_window.controller = controller
+
+        # Bind panel editor
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.bind_controller(controller)
+
+        # Bind controller settings tab (for device callbacks)
+        if hasattr(self.main_window, "controller_settings_tab"):
+            self.main_window.controller_settings_tab.bind_controller(controller)
+
+        # Bind ChatBox tab
+        if hasattr(self.main_window, "chatbox_tab"):
+            self.main_window.chatbox_tab.bind_controller(controller)
+
         # Start OSC server
         await self._start_osc_server()
+        self._register_panel_osc(controller)
 
-        # Enable device group
         self.device_group.setEnabled(True)
 
-        # Connect OSC update signal
         if not self._osc_signal_connected:
-            self.main_window.osc_parameters_tab.addresses_updated.connect(
-                self._update_osc_mappings
-            )
+            if hasattr(self.main_window, "osc_parameters_tab"):
+                self.main_window.osc_parameters_tab.addresses_updated.connect(
+                    lambda: self._update_osc_interaction(controller)
+                )
             self._osc_signal_connected = True
+        self._update_osc_interaction(controller)
+
+        # Populate scan combo with devices already connected to the WS server
+        await self._load_connected_devices()
 
     async def _list_and_pick_agent(self):
-        """Connect temporarily to relay, fetch agent list, show picker dialog."""
         host  = self.host_edit.text().strip() or "127.0.0.1"
         port  = self.yokonex_port_spin.value()
         token = self.relay_token_edit.text().strip()
@@ -259,15 +312,13 @@ class NetworkConfigTab(QWidget):
 
         self.relay_list_btn.setEnabled(False)
         try:
-            # Temporary connection just to list agents (no subscribe yet)
             import websockets as _ws
             import json as _json
             async with _ws.connect(url, open_timeout=5) as ws:
                 await ws.send(_json.dumps({"type": "client_hello", "token": token}))
                 hello = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
                 if not hello.get("ok"):
-                    QMessageBox.warning(self, "Error",
-                                        f"Auth failed: {hello.get('message')}")
+                    QMessageBox.warning(self, "Error", f"Auth failed: {hello.get('message')}")
                     return
                 await ws.send(_json.dumps({"id": 1, "type": "list_agents"}))
                 resp = _json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
@@ -277,29 +328,56 @@ class NetworkConfigTab(QWidget):
                 QMessageBox.information(self, "Agents", "No agents online.")
                 return
 
-            # Show simple picker
             from PySide6.QtWidgets import QInputDialog
             items = [f"{a['id']}  ({a['clients']} client(s))" for a in agents]
-            item, ok = QInputDialog.getItem(
-                self, "Select Agent", "Choose an agent to connect to:", items, 0, False
-            )
+            item, ok = QInputDialog.getItem(self, "Select Agent", "Agent:", items, 0, False)
             if ok and item:
-                chosen_id = agents[items.index(item)]["id"]
-                self.relay_agent_edit.setText(chosen_id)
+                self.relay_agent_edit.setText(agents[items.index(item)]["id"])
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to list agents: {e}")
+            QMessageBox.warning(self, "Error", f"Failed: {e}")
         finally:
             self.relay_list_btn.setEnabled(True)
+
+    async def _load_connected_devices(self):
+        """Fetch devices already connected on the WS server and populate the scan combo."""
+        if not self._yokonex:
+            return
+        try:
+            devices = await self._yokonex.list_devices()
+        except Exception as e:
+            log.warning("list_devices failed: %s", e)
+            return
+        if not devices:
+            return
+        self._scanned = devices
+        self.scan_combo.clear()
+        for d in devices:
+            label = f"{d.get('name', 'Unknown')} ({d['address']})"
+            idx = self.scan_combo.count()
+            self.scan_combo.addItem(label, d["address"])
+            # Mark as already-connected + store type hint
+            dtype = d.get("type") or d.get("device_type", "")
+            self.scan_combo.setItemData(idx, {"connected": True, "type": dtype}, Qt.UserRole + 1)
+        if self.scan_combo.count() > 0:
+            # Pre-select dtype from first device if known
+            first_extra = self.scan_combo.itemData(0, Qt.UserRole + 1) or {}
+            dtype = first_extra.get("type", "")
+            if dtype in _DEVICE_TYPES:
+                self.dtype_combo.setCurrentText(dtype)
+        log.info("Loaded %d existing device(s) from server", len(devices))
 
     async def _do_scan(self):
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText(str(_("network_tab.scanning")))
         try:
             devices = await self._yokonex.scan(duration=5.0)
-            self.device_combo.clear()
+            self._scanned = devices
+            self.scan_combo.clear()
             for d in devices:
                 label = f"{d.get('name', 'Unknown')} ({d['address']})"
-                self.device_combo.addItem(label, d["address"])
+                idx = self.scan_combo.count()
+                self.scan_combo.addItem(label, d["address"])
+                self.scan_combo.setItemData(idx, {"connected": False, "type": ""}, Qt.UserRole + 1)
             if not devices:
                 QMessageBox.information(self, "Scan", str(_("network_tab.no_devices_found")))
         except Exception as e:
@@ -308,52 +386,92 @@ class NetworkConfigTab(QWidget):
             self.scan_btn.setEnabled(True)
             self.scan_btn.setText(str(_("network_tab.scan")))
 
-    async def _connect_device(self):
-        if self.device_combo.currentIndex() < 0:
+    async def _add_device(self):
+        idx = self.scan_combo.currentIndex()
+        if idx < 0:
+            QMessageBox.warning(self, "Error", "Scan for devices first.")
             return
-        address = self.device_combo.currentData()
-        name    = self.device_combo.currentText().split(" (")[0]
+        address = self.scan_combo.currentData(Qt.UserRole)
+        name    = self.scan_combo.currentText().split(" (")[0]
+        dtype   = self.dtype_combo.currentText()
+        extra   = self.scan_combo.itemData(idx, Qt.UserRole + 1) or {}
+        already_connected = extra.get("connected", False)
+        # Use server-provided type if available and user hasn't explicitly overridden
+        if extra.get("type") in _DEVICE_TYPES:
+            dtype = extra["type"]
 
-        self.connect_device_btn.setEnabled(False)
+        # Prevent duplicate entries
+        ctrl = self.main_window.controller
+        if ctrl and address in ctrl.devices:
+            QMessageBox.information(self, str(_("network_tab.already_added_title")),
+                                    str(_("network_tab.already_added_msg")).format(name=name))
+            return
+
+        self.add_device_btn.setEnabled(False)
         try:
-            result = await self._yokonex.connect_device(address, name, "toy")
+            if not already_connected:
+                result = await self._yokonex.connect_device(address, name, dtype)
+                if not result.get("ok"):
+                    QMessageBox.warning(self, str(_("network_tab.error_title")),
+                                        str(_("network_tab.connect_failed")).format(
+                                            error=result.get("error", "")))
+                    self.add_device_btn.setEnabled(True)
+                    return
         except Exception as e:
             log.error("connect_device error: %s", e)
-            self.connect_device_btn.setEnabled(True)
+            self.add_device_btn.setEnabled(True)
             return
 
-        if not result.get("ok"):
-            QMessageBox.warning(self, "Error",
-                                f"Device connect failed: {result.get('error')}")
-            self.connect_device_btn.setEnabled(True)
-            return
+        # Register with controller
+        if ctrl:
+            ctrl.register_device(address, name, dtype)
 
-        # Create ToyController
-        osc_out = udp_client.SimpleUDPClient("127.0.0.1", 9000)
-        controller = ToyController(self._yokonex, osc_out, address, self.main_window)
-        self.main_window.controller = controller
-        self._set_device_status(True)
-        self.disconnect_device_btn.setEnabled(True)
-        self.main_window.controller_settings_tab.bind_controller(controller)
-        self._update_osc_mappings()
-        log.info("ToyController created for %s", address)
+        # Notify OSC parameters tab of updated device list
+        if hasattr(self.main_window, "osc_parameters_tab") and ctrl:
+            self.main_window.osc_parameters_tab.set_devices(ctrl.devices)
 
-    async def _disconnect_device(self):
-        ctrl = self.main_window.controller
-        if ctrl is None:
+        # Refresh panel editor device selector
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.refresh_preset_devices()
+
+        # Add to list widget
+        item = QListWidgetItem(f"● {name}  ({address})  [{dtype}]")
+        item.setData(Qt.UserRole, address)
+        self.device_list.addItem(item)
+
+        # Refresh panel editor button labels (devices changed)
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.refresh()
+
+        log.info("Connected device %s (%s) type=%s", name, address, dtype)
+        self.add_device_btn.setEnabled(True)
+
+    async def _remove_device(self):
+        selected = self.device_list.selectedItems()
+        if not selected:
             return
-        self.disconnect_device_btn.setEnabled(False)
+        item = selected[0]
+        address = item.data(Qt.UserRole)
+
         try:
-            await self._yokonex.disconnect_device(ctrl.device_address)
-            ctrl.cancel_tasks()
+            await self._yokonex.disconnect_device(address)
         except Exception as e:
             log.error("disconnect_device error: %s", e)
-        finally:
-            self.main_window.controller = None
-            self._set_device_status(False)
-            self.connect_device_btn.setEnabled(True)
-            if hasattr(self.main_window, "controller_settings_tab"):
-                self.main_window.controller_settings_tab.reset_display()
+
+        ctrl = self.main_window.controller
+        if ctrl:
+            ctrl.unregister_device(address)
+
+        self.device_list.takeItem(self.device_list.row(item))
+        # Let _on_selection_changed handle button state based on remaining items
+
+        # Notify OSC parameters tab
+        if hasattr(self.main_window, "osc_parameters_tab") and ctrl:
+            self.main_window.osc_parameters_tab.set_devices(ctrl.devices)
+
+        if hasattr(self.main_window, "panel_editor_tab"):
+            self.main_window.panel_editor_tab.refresh()
+            self.main_window.panel_editor_tab.refresh_preset_devices()
 
     async def _start_osc_server(self):
         if self._osc_transport is not None:
@@ -368,70 +486,77 @@ class NetworkConfigTab(QWidget):
         except Exception as e:
             log.error("Failed to start OSC server: %s", e)
 
-    # ── OSC dispatcher management ──────────────────────────────────────────────
-
-    def _update_osc_mappings(self, *_):
-        ctrl = self.main_window.controller
-        if ctrl is None:
+    def _register_panel_osc(self, controller):
+        if self._panel_handlers:
             return
-        asyncio.create_task(self._apply_osc_mappings(ctrl))
+        for addr in (
+            "/avatar/parameters/SoundPad/Button/*",
+            "/avatar/parameters/SoundPad/Page",
+        ):
+            handler = functools.partial(self._osc_panel_task, controller=controller)
+            self._osc_dispatcher.map(addr, handler)
+            self._panel_handlers[addr] = handler
 
-    async def _apply_osc_mappings(self, ctrl):
-        # Clear previous interaction mappings
-        for addr, handler in self._osc_handlers.items():
+    def _update_osc_interaction(self, controller):
+        """Rebuild OSC interaction address → handler mappings."""
+        # Unmap previous interaction handlers
+        for addr, handler in list(self._osc_interaction_handlers.items()):
             self._osc_dispatcher.unmap(addr, handler)
-        self._osc_handlers.clear()
+        self._osc_interaction_handlers.clear()
 
-        # Register custom interaction addresses
-        for entry in self.main_window.get_osc_addresses():
-            address = entry["address"]
-            channels = entry["channels"]
-            ranges   = entry.get("mapping_ranges",
-                                  {m: {"min": 0, "max": 100} for m in ("A", "B", "C")})
-            motor_list = [m for m in ("A", "B", "C") if channels.get(m)]
-            if not motor_list:
+        if not hasattr(self.main_window, "osc_parameters_tab"):
+            return
+        for entry in self.main_window.osc_parameters_tab.get_addresses():
+            addr = entry.get("address", "")
+            if not addr:
                 continue
             handler = functools.partial(
-                self._osc_interaction_task,
-                controller=ctrl,
-                motors=motor_list,
-                mapping_ranges=ranges,
+                self._osc_interaction_task, controller=controller, entry=entry
             )
-            self._osc_dispatcher.map(address, handler)
-            self._osc_handlers[address] = handler
-
-        log.info("OSC interaction mappings updated (%d addresses)", len(self._osc_handlers))
-
-        # Register panel control addresses (once)
-        if not self._panel_handlers:
-            for addr in (
-                "/avatar/parameters/SoundPad/Button/*",
-                "/avatar/parameters/SoundPad/Volume",
-                "/avatar/parameters/SoundPad/Page",
-                "/avatar/parameters/SoundPad/PanelControl",
-            ):
-                handler = functools.partial(self._osc_panel_task, controller=ctrl)
-                self._osc_dispatcher.map(addr, handler)
-                self._panel_handlers[addr] = handler
+            self._osc_dispatcher.map(addr, handler)
+            self._osc_interaction_handlers[addr] = handler
+        log.info("OSC interaction mappings updated (%d entries)",
+                 len(self._osc_interaction_handlers))
 
     def _osc_panel_task(self, address, *args, controller):
-        asyncio.create_task(controller.handle_osc_panel(address, *args))
+        _spawn(controller.handle_osc_panel(address, *args))
 
-    def _osc_interaction_task(self, address, *args, controller, motors, mapping_ranges):
+    def _osc_interaction_task(self, address, *args, controller, entry):
         if not args:
             return
         value = float(args[0])
-        asyncio.create_task(
-            controller.handle_osc_interaction(address, value, motors, mapping_ranges)
-        )
+        _spawn(controller.handle_osc_interaction(address, value, entry))
 
     # ── YokoNex event handler ──────────────────────────────────────────────────
 
     async def _on_yokonex_event(self, data: dict):
-        event = data.get("event")
+        event   = data.get("event")
+        payload = data.get("data", {})
+        addr    = payload.get("address", "")
+
+        # Route device state events to fusion controller + controller settings tab
+        if event in ("channel_status", "battery", "motor_status") and addr:
+            ctrl = self.main_window.controller
+            if ctrl:
+                ctrl.update_device_state(addr, event, payload)
+            if hasattr(self.main_window, "controller_settings_tab"):
+                self.main_window.controller_settings_tab.on_device_event(addr, data)
+
         if event == "battery":
-            pct = data.get("data", {}).get("battery", "?")
-            log.info("Battery: %s%%", pct)
+            pct = payload.get("battery") or payload.get("level", "?")
+            log.info("Battery %s: %s%%", addr, pct)
+        elif event == "disconnected":
+            log.warning("Device disconnected: %s", addr)
+            ctrl = self.main_window.controller
+            if ctrl:
+                ctrl.unregister_device(addr)
+                if hasattr(self.main_window, "osc_parameters_tab"):
+                    self.main_window.osc_parameters_tab.set_devices(ctrl.devices)
+            for i in range(self.device_list.count()):
+                item = self.device_list.item(i)
+                if item and item.data(Qt.UserRole) == addr:
+                    self.device_list.takeItem(i)
+                    break
 
     # ── Status helpers ─────────────────────────────────────────────────────────
 
@@ -443,21 +568,6 @@ class NetworkConfigTab(QWidget):
             self.yokonex_status_label.setText(str(_("network_tab.disconnected")))
             self._set_label_style(self.yokonex_status_label, "red")
 
-    def _set_device_status(self, online: bool):
-        self.main_window.app_status_online = online
-        if online:
-            self.device_status_label.setText(str(_("network_tab.device_online")))
-            self._set_label_style(self.device_status_label, "green")
-            if hasattr(self.main_window, "controller_settings_tab"):
-                self.main_window.controller_settings_tab.controller_group.setEnabled(True)
-                self.main_window.controller_settings_tab.command_group.setEnabled(True)
-        else:
-            self.device_status_label.setText(str(_("network_tab.device_offline")))
-            self._set_label_style(self.device_status_label, "red")
-            if hasattr(self.main_window, "controller_settings_tab"):
-                self.main_window.controller_settings_tab.controller_group.setEnabled(False)
-                self.main_window.controller_settings_tab.command_group.setEnabled(False)
-
     @staticmethod
     def _set_label_style(label, color):
         label.setStyleSheet(
@@ -466,14 +576,12 @@ class NetworkConfigTab(QWidget):
         )
         label.adjustSize()
 
-    # ── Settings persistence ───────────────────────────────────────────────────
-
     def _save_settings(self):
-        self.main_window.settings["yokonex_host"]  = self.host_edit.text().strip()
-        self.main_window.settings["yokonex_port"]  = self.yokonex_port_spin.value()
-        self.main_window.settings["osc_port"]      = self.osc_port_spin.value()
-        self.main_window.settings["relay_mode"]    = self.relay_check.isChecked()
-        self.main_window.settings["relay_token"]   = self.relay_token_edit.text().strip()
+        self.main_window.settings["yokonex_host"]   = self.host_edit.text().strip()
+        self.main_window.settings["yokonex_port"]   = self.yokonex_port_spin.value()
+        self.main_window.settings["osc_port"]       = self.osc_port_spin.value()
+        self.main_window.settings["relay_mode"]     = self.relay_check.isChecked()
+        self.main_window.settings["relay_token"]    = self.relay_token_edit.text().strip()
         self.main_window.settings["relay_agent_id"] = self.relay_agent_edit.text().strip()
         save_settings(self.main_window.settings)
 
@@ -501,7 +609,11 @@ class NetworkConfigTab(QWidget):
             else str(_("network_tab.connect"))
         )
         self.scan_btn.setText(str(_("network_tab.scan")))
-        self.connect_device_btn.setText(str(_("network_tab.connect_device")))
-        self.disconnect_device_btn.setText(str(_("network_tab.disconnect_device")))
+        self.add_device_btn.setText(str(_("network_tab.connect_device_btn")))
+        self.remove_device_btn.setText(str(_("network_tab.disconnect_selected")))
         self.lang_label.setText(str(_("main.settings.language")) + ":")
-        self.device_combo.setPlaceholderText(str(_("network_tab.no_devices")))
+        self.scan_combo.setPlaceholderText(str(_("network_tab.no_devices")))
+
+    # ── Legacy compat (OSC parameters tab still calls this) ───────────────────
+    def get_osc_addresses(self) -> list:
+        return []
