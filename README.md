@@ -6,7 +6,6 @@
 ![VRChat](https://img.shields.io/badge/VRChat-OSC-blueviolet)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-yellow)
 
-**版本**: v1.0.0 · **开发者**: 可乐Shayne · **协议**: MIT  
 **源仓库**: [DG-LAB-VRCOSC](https://github.com/ccvrc/DG-LAB-VRCOSC)（改造基础）  
 **WebSocket 桥接**: [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI)
 
