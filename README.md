@@ -1,10 +1,11 @@
 # YCY-VRCOSC — YokoNex Fusion Controller for VRChat
+<img width="1072" height="792" alt="148f489e27ca0ff94c2354486a4edf06" src="https://github.com/user-attachments/assets/261c51a1-2d6a-4b0a-95e0-7ed8a85468e4" />
 
 **版本**: v1.0.0 · **开发者**: 可乐Shayne · **协议**: MIT  
 **源仓库**: [DG-LAB-VRCOSC](https://github.com/ccvrc/DG-LAB-VRCOSC)（改造基础）  
 **WebSocket 桥接**: [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI)
 
-通过 VRChat OSC 接口同时控制多台 **YokoNex YSKJ_TOY_BLE协议设备**（跳蛋、飞机杯、炮机）与 **YokoNex YSKJ_EMS_BLEV2协议设备**（第二代电击器）。无需第三方 App 中转，直接通过 BLE 桥接服务器通信。（
+通过 VRChat OSC 接口同时控制多台 **YokoNex YSKJ_TOY_BLE协议设备**（跳蛋、飞机杯、炮机）与 **YokoNex YSKJ_EMS_BLEV2协议设备**（第二代电击器）。无需第三方 App 中转，直接通过 BLE 桥接服务器通信。支持自定义Chatbox消息，深度自定义SoundPad指向功能事件，自定义强度上限等。
 
 ---
 
@@ -19,8 +20,14 @@
 多台设备可同时连接，无数量限制。单个按键动作可一次性对多台设备发送指令。
 
 ---
+## 
 
-## 架构
+## 项目截图
+<img width="1072" height="792" alt="d65dedec0478c45be10c83e3a2c4e210" src="https://github.com/user-attachments/assets/0e526070-a3e1-41e9-b816-e28caf2d59fd" />
+<img width="1072" height="792" alt="f24018d858cb5bc15ad5ae8edb40aec9" src="https://github.com/user-attachments/assets/9ffa6c63-343a-4824-b762-a5971cc6d39f" />
+<img width="492" height="605" alt="c3c9bda4a8ec9d19561cf70d8a5c0d4c" src="https://github.com/user-attachments/assets/2e7b28df-f74e-4c83-be46-8c01f5c20782" />
+
+<img width="1072" height="792" alt="9ab135cd16e0e0b62df9d0d8cf91fc27" src="https://github.com/user-attachments/assets/41f904f0-069e-4e3d-adf3-104d100fca2f" />
 
 ```
 VRChat ──OSC UDP:9001──► YCY-VRCOSC (本程序)
