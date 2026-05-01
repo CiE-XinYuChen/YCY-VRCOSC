@@ -4,7 +4,7 @@
 **源仓库**: [DG-LAB-VRCOSC](https://github.com/ccvrc/DG-LAB-VRCOSC)（改造基础）  
 **WebSocket 桥接**: [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI)
 
-通过 VRChat OSC 接口同时控制多台 **YokoNex 飞机杯**（电机 A/B/C）与 **DG-LAB 电击器**（通道 A/B）。无需第三方 App 中转，直接通过 BLE 桥接服务器通信。
+通过 VRChat OSC 接口同时控制多台 **YokoNex YSKJ_TOY_BLE协议设备**（跳蛋、飞机杯、炮机）与 **YokoNex YSKJ_EMS_BLEV2协议设备**（第二代电击器）。无需第三方 App 中转，直接通过 BLE 桥接服务器通信。（
 
 ---
 
