@@ -94,6 +94,13 @@ class FusionController:
 
     # ── Hold loop ──────────────────────────────────────────────────────────────
 
+    def stop(self) -> None:
+        """Cancel all in-flight hold tasks (called on teardown/reconnect)."""
+        for task in list(self._hold_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._hold_tasks.clear()
+
     async def _hold_loop(self, panel: int, btn: int) -> None:
         button = get_button(self._panels, panel, btn)
         if not button:
@@ -153,7 +160,13 @@ class FusionController:
     async def _fire_actions(self, actions: list[dict]) -> None:
         """Execute all actions concurrently."""
         tasks = [asyncio.create_task(self._execute_action(a)) for a in actions]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for r in results:
             if isinstance(r, Exception):
                 log.warning("Action error: %s", r)
@@ -384,14 +397,23 @@ class FusionController:
                         hi = r.get("max", 100) / 100.0
                         if lo > hi:
                             lo, hi = hi, lo
-                        intensity = max(1, int((lo + (hi - lo) * value) * 276))
-                        await self._execute_action({"device_address": addr,
-                                                    "action": "set_channel",
-                                                    "params": {
-                                                        "channel": ch, "enabled": True,
-                                                        "intensity": intensity, "mode": 1,
-                                                        "freq": 0, "pulse_us": 0,
-                                                    }})
+                        intensity = int((lo + (hi - lo) * value) * 276)
+                        if intensity <= 0:
+                            await self._execute_action({"device_address": addr,
+                                                        "action": "set_channel",
+                                                        "params": {
+                                                            "channel": ch, "enabled": False,
+                                                            "intensity": 0, "mode": 1,
+                                                            "freq": 0, "pulse_us": 0,
+                                                        }})
+                        else:
+                            await self._execute_action({"device_address": addr,
+                                                        "action": "set_channel",
+                                                        "params": {
+                                                            "channel": ch, "enabled": True,
+                                                            "intensity": min(intensity, 276), "mode": 1,
+                                                            "freq": 0, "pulse_us": 0,
+                                                        }})
 
     # ── Device change callbacks ────────────────────────────────────────────────
 

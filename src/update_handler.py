@@ -27,8 +27,8 @@ class UpdateHandler:
         self.update_url = "https://api.github.com/repos/ccvrc/DG-LAB-VRCOSC/releases"
 
     @classmethod
-    def set_location(self, location):
-        self.location = location
+    def set_location(cls, location):
+        cls.location = location
 
     
     async def check_update(self, manual_check=True):
@@ -274,7 +274,7 @@ def run_powershell_in_new_window(download_url):
 
     script_path = os.path.join(base_path, "download.ps1")
     url = download_url
-    output_path = r"C:\temp"
+    output_path = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "yokonex_update")
 
     # 构建 PowerShell 命令参数列表
     command = [

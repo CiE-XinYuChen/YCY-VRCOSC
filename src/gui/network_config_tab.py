@@ -30,10 +30,16 @@ def _spawn(coro):
 
     Calling create_task from within an OSC callback or any running-task context
     can cause 'Cannot enter into task' errors in Python 3.13.  Scheduling via
-    call_soon ensures the task is created from the event-loop's base context.
+    call_soon_threadsafe ensures the task is created from the event-loop's base
+    context and works correctly when called from non-loop threads (e.g. OSC).
     """
-    loop = asyncio.get_event_loop()
-    loop.call_soon(lambda: loop.create_task(coro, context=contextvars.copy_context()))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    loop.call_soon_threadsafe(
+        lambda: loop.create_task(coro, context=contextvars.copy_context())
+    )
 
 
 class NetworkConfigTab(QWidget):
@@ -233,6 +239,23 @@ class NetworkConfigTab(QWidget):
         host = self.host_edit.text().strip() or "127.0.0.1"
         port = self.yokonex_port_spin.value()
         url  = f"ws://{host}:{port}"
+
+        # Tear down any existing connection before reconnecting
+        if self._yokonex is not None:
+            try:
+                await self._yokonex.close()
+            except Exception:
+                pass
+            self._yokonex = None
+            self._set_yokonex_status(False)
+
+        old_ctrl = getattr(self.main_window, "controller", None)
+        if old_ctrl is not None:
+            try:
+                old_ctrl.stop()
+            except Exception:
+                pass
+            self.main_window.controller = None
 
         self.connect_btn.setEnabled(False)
         self.connect_btn.setText(str(_("network_tab.connecting")))

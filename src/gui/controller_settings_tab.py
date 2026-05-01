@@ -18,8 +18,13 @@ _EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
 
 def _spawn(coro):
-    loop = asyncio.get_event_loop()
-    loop.call_soon(lambda: loop.create_task(coro, context=contextvars.copy_context()))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    loop.call_soon_threadsafe(
+        lambda: loop.create_task(coro, context=contextvars.copy_context())
+    )
 
 _TOY_MOTORS = ("A", "B", "C")
 _ESTIM_CHS  = ("A", "B")
@@ -220,6 +225,9 @@ class _EstimSection(QGroupBox):
 
     def _on_enabled(self, ch: str, enabled: bool) -> None:
         self._enabled[ch] = enabled
+        if enabled and self._intensity[ch] <= 0:
+            # Don't send enabled=True with zero intensity; slider movement will trigger it
+            return
         self._send(ch)
 
     def _on_intensity(self, ch: str, value: int) -> None:
@@ -253,18 +261,21 @@ class _EstimSection(QGroupBox):
             ch = payload.get("channel")
             if ch in _ESTIM_CHS:
                 cap = self._caps.get(ch, 276)
-                self._enabled[ch]   = payload.get("enabled", False)
-                self._intensity[ch] = max(0, min(cap, payload.get("intensity", 0)))
-                self._modes[ch]     = payload.get("mode", 1)
+                self._enabled[ch] = payload.get("enabled", False)
+                self._modes[ch]   = payload.get("mode", 1)
 
                 self._en_checks[ch].blockSignals(True)
                 self._en_checks[ch].setChecked(self._enabled[ch])
                 self._en_checks[ch].blockSignals(False)
 
-                self._int_sliders[ch].blockSignals(True)
-                self._int_sliders[ch].setValue(self._intensity[ch])
-                self._int_sliders[ch].blockSignals(False)
-                self._val_labels[ch].setText(str(self._intensity[ch]))
+                # Don't overwrite user's in-progress slider adjustment
+                if not self._debounce[ch].isActive():
+                    intensity = max(0, min(cap, payload.get("intensity", 0)))
+                    self._intensity[ch] = intensity
+                    self._int_sliders[ch].blockSignals(True)
+                    self._int_sliders[ch].setValue(intensity)
+                    self._int_sliders[ch].blockSignals(False)
+                    self._val_labels[ch].setText(str(intensity))
 
                 self._md_combos[ch].blockSignals(True)
                 self._md_combos[ch].setCurrentIndex(self._modes[ch] - 1)
