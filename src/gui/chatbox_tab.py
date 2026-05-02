@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from config import save_settings
 from i18n import language_signals, translate as _
 
 log = logging.getLogger(__name__)
@@ -131,6 +132,36 @@ class ChatBoxTab(QWidget):
 
         language_signals.language_changed.connect(self.update_ui_texts)
 
+        # Load persisted settings (after all widgets are created)
+        self._load_settings()
+
+    # ── Settings persistence ──────────────────────────────────────────────────
+
+    def _load_settings(self) -> None:
+        s = self.main_window.settings
+        enabled  = s.get("chatbox_enabled", False)
+        interval = s.get("chatbox_interval", 3.0)
+        template = s.get("chatbox_template", _DEFAULT_TEMPLATE)
+
+        self.enable_check.blockSignals(True)
+        self.enable_check.setChecked(enabled)
+        self.enable_check.blockSignals(False)
+
+        self.interval_spin.blockSignals(True)
+        self.interval_spin.setValue(float(interval))
+        self.interval_spin.blockSignals(False)
+        self._send_timer.setInterval(int(max(0.5, interval) * 1000))
+
+        self.template_edit.blockSignals(True)
+        self.template_edit.setPlainText(template)
+        self.template_edit.blockSignals(False)
+
+    def _save_settings(self) -> None:
+        self.main_window.settings["chatbox_enabled"]  = self.enable_check.isChecked()
+        self.main_window.settings["chatbox_interval"] = self.interval_spin.value()
+        self.main_window.settings["chatbox_template"] = self.template_edit.toPlainText()
+        save_settings(self.main_window.settings)
+
     # ── Controller binding ────────────────────────────────────────────────────
 
     def bind_controller(self, controller) -> None:
@@ -156,17 +187,20 @@ class ChatBoxTab(QWidget):
             self._send_timer.stop()
             if self._controller and self._controller.osc_client:
                 self._controller.osc_client.send_message("/chatbox/input", ["", True, False])
+        self._save_settings()
 
     def _on_interval_changed(self, v: float) -> None:
         if self._controller:
             self._controller.chatbox_interval = v
         self._send_timer.setInterval(int(max(0.5, v) * 1000))
+        self._save_settings()
 
     def _on_template_changed(self) -> None:
         text = self.template_edit.toPlainText()
         if self._controller:
             self._controller.chatbox_template = text
         self._refresh_preview()
+        self._save_settings()
 
     def _auto_send(self) -> None:
         """Called by _send_timer to send chatbox periodically."""

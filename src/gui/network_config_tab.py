@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import functools
 import logging
 
@@ -26,20 +25,9 @@ _DEVICE_TYPES = ["toy", "estim"]
 
 
 def _spawn(coro):
-    """Create an asyncio task with an isolated context (Python 3.13 workaround).
-
-    Calling create_task from within an OSC callback or any running-task context
-    can cause 'Cannot enter into task' errors in Python 3.13.  Scheduling via
-    call_soon_threadsafe ensures the task is created from the event-loop's base
-    context and works correctly when called from non-loop threads (e.g. OSC).
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
-    loop.call_soon_threadsafe(
-        lambda: loop.create_task(coro, context=contextvars.copy_context())
-    )
+    """Schedule a coroutine as a task from any thread (OSC callbacks run in a non-loop thread)."""
+    loop = asyncio.get_event_loop()
+    loop.call_soon_threadsafe(lambda: loop.create_task(coro))
 
 
 class NetworkConfigTab(QWidget):

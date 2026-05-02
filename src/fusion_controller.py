@@ -78,15 +78,49 @@ class FusionController:
     async def handle_button(self, panel: int, btn: int, pressed: bool) -> None:
         key = (panel, btn)
         if pressed:
-            # Cancel any existing task for this key first
             existing = self._hold_tasks.pop(key, None)
             if existing and not existing.done():
                 existing.cancel()
-            task = asyncio.create_task(
-                self._hold_loop(panel, btn),
-                name=f"hold-{panel}-{btn}",
-            )
-            self._hold_tasks[key] = task
+
+            button = get_button(self._panels, panel, btn)
+            if not button:
+                log.debug("Button p%d/b%d not configured", panel, btn)
+                return
+            actions = button.get("actions", [])
+            if not actions:
+                return
+
+            once_actions = [a for a in actions if a.get("once", False)]
+            loop_actions = [a for a in actions if not a.get("once", False)]
+
+            # Once-actions fire immediately — guaranteed even on a quick tap
+            if once_actions:
+                asyncio.ensure_future(self._fire_actions(once_actions))
+
+            if loop_actions:
+                # Snapshot restore state before any fire happens
+                fire_restores: list[dict] = []
+                for a in loop_actions:
+                    if a.get("action") == "fire_channel":
+                        addr = self._resolve_addr(a)
+                        if addr:
+                            ch    = a.get("params", {}).get("channel", "A")
+                            state = self._device_states.get(addr, {})
+                            fire_restores.append({
+                                "addr":      addr,
+                                "channel":   ch,
+                                "intensity": state.get(f"intensity_{ch}", 1),
+                                "mode":      state.get(f"mode_{ch}", 1),
+                                "enabled":   state.get(f"enabled_{ch}", True),
+                            })
+                # First shot guaranteed — not subject to task cancellation
+                asyncio.ensure_future(self._fire_actions(loop_actions))
+                # Repeat task — only responsible for subsequent hold repeats
+                task = asyncio.create_task(
+                    self._hold_repeat(panel, btn, loop_actions, fire_restores),
+                    name=f"hold-{panel}-{btn}",
+                )
+                self._hold_tasks[key] = task
         else:
             task = self._hold_tasks.pop(key, None)
             if task and not task.done():
@@ -101,46 +135,15 @@ class FusionController:
                 task.cancel()
         self._hold_tasks.clear()
 
-    async def _hold_loop(self, panel: int, btn: int) -> None:
-        button = get_button(self._panels, panel, btn)
-        if not button:
-            log.debug("Button p%d/b%d not configured", panel, btn)
-            return
-        actions = button.get("actions", [])
-        if not actions:
-            return
-
-        once_actions = [a for a in actions if a.get("once", False)]
-        loop_actions = [a for a in actions if not a.get("once", False)]
-
-        # Save pre-fire intensities for fire_channel restore on release
-        fire_restores: list[dict] = []
-        for a in loop_actions:
-            if a.get("action") == "fire_channel":
-                addr = self._resolve_addr(a)
-                if addr:
-                    ch    = a.get("params", {}).get("channel", "A")
-                    state = self._device_states.get(addr, {})
-                    fire_restores.append({
-                        "addr":      addr,
-                        "channel":   ch,
-                        "intensity": state.get(f"intensity_{ch}", 1),
-                        "mode":      state.get(f"mode_{ch}", 1),
-                        "enabled":   state.get(f"enabled_{ch}", True),
-                    })
-
-        log.debug("Hold start  p%d/b%d  label=%s", panel, btn, button.get("label", ""))
+    async def _hold_repeat(self, panel: int, btn: int,
+                           loop_actions: list[dict], fire_restores: list[dict]) -> None:
+        """Repeat loop_actions every _HOLD_INTERVAL while button is held.
+        The first shot was already fired by handle_button before this task starts."""
+        log.debug("Hold start p%d/b%d", panel, btn)
         try:
-            first = True
             while True:
-                if first:
-                    await self._fire_actions(once_actions + loop_actions)
-                    first = False
-                    if not loop_actions:
-                        return  # pure once-actions: no repeat needed
-                else:
-                    await self._fire_actions(loop_actions)
                 await asyncio.sleep(_HOLD_INTERVAL)
+                await self._fire_actions(loop_actions)
         except asyncio.CancelledError:
             for restore in fire_restores:
                 try:
@@ -155,7 +158,7 @@ class FusionController:
                 except Exception as e:
                     log.warning("fire_channel restore %s ch%s: %s",
                                 restore["addr"][-8:], restore["channel"], e)
-            log.debug("Hold stop   p%d/b%d", panel, btn)
+            log.debug("Hold stop p%d/b%d", panel, btn)
 
     async def _fire_actions(self, actions: list[dict]) -> None:
         """Execute all actions concurrently."""

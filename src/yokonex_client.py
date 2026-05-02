@@ -13,7 +13,6 @@ Python 3.13 + qasync compatibility.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import logging
 
@@ -23,14 +22,8 @@ log = logging.getLogger("yokonex_vrcosc.ws")
 
 
 def _spawn(coro):
-    """Create an asyncio task with an isolated context (Python 3.13 workaround)."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
-    loop.call_soon_threadsafe(
-        lambda: loop.create_task(coro, context=contextvars.copy_context())
-    )
+    """Schedule a coroutine as a task without explicit context to avoid Python 3.13 + qasync conflicts."""
+    asyncio.ensure_future(coro)
 
 
 class YokoNexClient:
@@ -57,9 +50,8 @@ class YokoNexClient:
         try:
             self._ws = await _ws_connect(self.url, open_timeout=5, ping_interval=None)
             loop = asyncio.get_running_loop()
-            ctx  = contextvars.copy_context()
             self._recv_task = loop.create_task(
-                self._recv_loop(), name="yokonex-recv", context=ctx
+                self._recv_loop(), name="yokonex-recv"
             )
             self._connected = True
             log.info("Connected (direct) to %s", self.url)
@@ -99,9 +91,8 @@ class YokoNexClient:
                 return False
 
             loop = asyncio.get_running_loop()
-            ctx  = contextvars.copy_context()
             self._recv_task = loop.create_task(
-                self._recv_loop(), name="yokonex-recv", context=ctx
+                self._recv_loop(), name="yokonex-recv"
             )
             self._connected = True
             log.info("Connected (relay) to %s  agent=%s", self.url, agent_id)

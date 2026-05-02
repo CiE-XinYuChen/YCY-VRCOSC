@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![VRChat](https://img.shields.io/badge/VRChat-OSC-blueviolet)
-![Python](https://img.shields.io/badge/Python-3.10%2B-yellow)
+![Python](https://img.shields.io/badge/Python-3.12%2B-yellow)
 
 **源仓库**: [DG-LAB-VRCOSC](https://github.com/ccvrc/DG-LAB-VRCOSC)（改造基础）  
 **WebSocket 桥接**: [YokoNex-OpenCLI](https://github.com/CiE-XinYuChen/YokoNex-OpenCLI)
@@ -64,6 +64,8 @@ VRChat ──OSC UDP:9001──► YCY-VRCOSC (本程序)
 - 面板控制功能需要在 Booth 购买 [声音面板](https://booth.pm/zh-cn/items/5950846) 后将资源导入工程，再导入本项目提供的修改包，将修改包内提供的 prefab 安装到您的 avatar 中。
 
 ### 1. 安装依赖
+
+> **Python 版本要求：≥ 3.12**（推荐 3.12，3.13 / 3.14 需搭配本项目已内置的 qasync 兼容修复方可正常运行）
 
 ```bash
 pip install -r requirements.txt
@@ -319,7 +321,7 @@ src/
 
 ## 技术说明
 
-- **Python 3.13 兼容**：WebSocket 使用 websockets 14.x（`websockets.asyncio.client`），规避了旧版 `transfer_data` 后台任务与 Python 3.13 上下文隔离的冲突；所有异步任务均通过 `_spawn` 辅助函数在隔离上下文中创建
+- **Python 3.12+ 兼容**：推荐 Python 3.12；3.13 / 3.14 中 qasync 与 asyncio 任务上下文隔离存在兼容性问题，本项目已通过移除显式 `context=copy_context()` 传参并禁用 WebSocket keepalive ping（`ping_interval=None`）解决此冲突
 - **qasync + PySide6**：Qt 事件循环驱动 asyncio，GUI 操作与设备通信完全异步
 - **防抖设计**：电击器强度滑块拖动时每 80ms 才向设备发送一次指令，避免 `data_error`
 

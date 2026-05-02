@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import logging
 
 from PySide6.QtCore import QLocale, Qt, QTimer
@@ -18,13 +17,7 @@ _EN = QLocale(QLocale.Language.English, QLocale.Country.UnitedStates)
 
 
 def _spawn(coro):
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
-    loop.call_soon_threadsafe(
-        lambda: loop.create_task(coro, context=contextvars.copy_context())
-    )
+    asyncio.ensure_future(coro)
 
 _TOY_MOTORS = ("A", "B", "C")
 _ESTIM_CHS  = ("A", "B")
@@ -121,15 +114,19 @@ class _EstimSection(QGroupBox):
 
     _DEFAULT_CAP = 100
 
-    def __init__(self, address: str, name: str, controller):
+    def __init__(self, address: str, name: str, controller,
+                 save_cap_cb=None, initial_caps: dict | None = None):
         super().__init__(f"🟢 {name}  [{address[-8:]}]  [estim]")
         self._addr       = address
         self._controller = controller
+        self._save_cap_cb = save_cap_cb
 
         self._enabled:   dict[str, bool] = {ch: False for ch in _ESTIM_CHS}
         self._intensity: dict[str, int]  = {ch: 0     for ch in _ESTIM_CHS}
         self._modes:     dict[str, int]  = {ch: 1     for ch in _ESTIM_CHS}
-        self._caps:      dict[str, int]  = {ch: self._DEFAULT_CAP for ch in _ESTIM_CHS}
+        self._caps:      dict[str, int]  = {
+            ch: (initial_caps or {}).get(ch, self._DEFAULT_CAP) for ch in _ESTIM_CHS
+        }
 
         # Debounce timers — only send to device 80ms after slider stops moving
         self._debounce: dict[str, QTimer] = {}
@@ -222,6 +219,8 @@ class _EstimSection(QGroupBox):
         if self._intensity[ch] > cap:
             self._int_sliders[ch].setValue(cap)
         self._controller.set_intensity_cap(self._addr, ch, cap)
+        if self._save_cap_cb:
+            self._save_cap_cb(self._addr, ch, cap)
 
     def _on_enabled(self, ch: str, enabled: bool) -> None:
         self._enabled[ch] = enabled
@@ -338,11 +337,24 @@ class ControllerSettingsTab(QWidget):
             return
         self._placeholder.setVisible(False)
         if dtype == "estim":
-            section = _EstimSection(addr, name, self._controller)
+            settings = self.main_window.settings
+            initial_caps = {ch: settings.get(f"cap_{addr}_{ch}", 100) for ch in _ESTIM_CHS}
+            section = _EstimSection(
+                addr, name, self._controller,
+                save_cap_cb=self._save_cap,
+                initial_caps=initial_caps,
+            )
+            for ch, cap in initial_caps.items():
+                self._controller.set_intensity_cap(addr, ch, cap)
         else:
             section = _ToySection(addr, name, self._controller)
         self._sections[addr] = section
         self._device_layout.addWidget(section)
+
+    def _save_cap(self, addr: str, ch: str, cap: int) -> None:
+        from config import save_settings
+        self.main_window.settings[f"cap_{addr}_{ch}"] = cap
+        save_settings(self.main_window.settings)
 
     def _on_device_removed(self, addr: str) -> None:
         section = self._sections.pop(addr, None)

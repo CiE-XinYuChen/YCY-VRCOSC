@@ -4,8 +4,9 @@ import logging
 import os
 import sys
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QMainWindow, QSlider, QTabWidget
 from qasync import QEventLoop
 
 import version
@@ -23,6 +24,16 @@ from gui.about_tab import AboutTab
 software_version = version.VERSION
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+class _WheelBlocker(QObject):
+    """Eat scroll-wheel events on all spinboxes, combos, and sliders."""
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Wheel:
+            if isinstance(obj, (QAbstractSpinBox, QComboBox, QSlider)):
+                event.ignore()
+                return True
+        return super().eventFilter(obj, event)
 
 
 def resource_path(relative_path: str) -> str:
@@ -43,7 +54,8 @@ class MainWindow(QMainWindow):
             set_language(self.settings["language"])
 
         self.setWindowTitle(str(_("main.title")))
-        self.setGeometry(300, 300, 960, 560)
+        self.setMinimumSize(980, 620)
+        self.resize(1060, 680)
         self.setWindowIcon(QIcon(resource_path("docs/images/fish-cake.ico")))
 
         self.controller = None
@@ -104,6 +116,10 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
+
+    # Block scroll wheel on all spinboxes, combos and sliders globally
+    _wheel_blocker = _WheelBlocker(app)
+    app.installEventFilter(_wheel_blocker)
 
     window = MainWindow()
     window.show()
